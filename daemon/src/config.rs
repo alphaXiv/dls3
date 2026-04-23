@@ -18,7 +18,7 @@ pub const CONFIG: Config = Config {
     access_key_id: Cow::Borrowed("GK_ACCESS"),
     secret_access_key: Cow::Borrowed("GK_SECRETSECRETSECRET"),
     session_token: None,
-    endpoint_url: Cow::Borrowed("http://localhost:3900"),
+    endpoint_url: Cow::Borrowed("http://garage:3900"),
     region: Cow::Borrowed("garage"),
     bucket: Cow::Borrowed("garage"),
     prefix: Cow::Borrowed(""),
