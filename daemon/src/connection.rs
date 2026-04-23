@@ -22,8 +22,7 @@ pub async fn handle_client(mut stream: UnixStream, store: Arc<Store>) -> Result<
                 write_message(
                     &mut stream,
                     &ServerMessage::Opened {
-                        path: &path,
-                        error: result.err(),
+                        errno: result.err().unwrap_or(0),
                     },
                 )
                 .await

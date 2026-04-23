@@ -38,13 +38,11 @@ fn openImpl(
         const response = try protocol.readMessage(state.reader(), state.allocator());
         switch (response) {
             .opened => |o| {
-                if (std.mem.eql(u8, o.path, key)) {
-                    if (o.errno) |e| {
-                        state.errno.errno = @enumFromInt(e);
-                        return error.Errno;
-                    } else {
-                        return fd;
-                    }
+                if (o.errno != .SUCCESS) {
+                    state.errno.errno = o.errno;
+                    return error.Errno;
+                } else {
+                    return fd;
                 }
             },
         }

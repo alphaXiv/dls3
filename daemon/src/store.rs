@@ -48,7 +48,7 @@ enum FileDownloadStatus {
     Downloading {
         /// Channel through which to receive the outcome of the attempt to download the file
         /// once it completes
-        download_result_channel: broadcast::Sender<Result<(), i32>>,
+        download_result_channel: broadcast::Sender<Result<(), u16>>,
     },
     Downloaded,
 }
@@ -189,7 +189,7 @@ impl Store {
 
 impl StoreHandle {
     /// Error is an errno value.
-    pub async fn open_file(&mut self, path: &str) -> Result<(), i32> {
+    pub async fn open_file(&mut self, path: &str) -> Result<(), u16> {
         let (tx_download, mut rx_download) = {
             let mut guard = self.store.present_files.lock().unwrap();
             if let Some(existing_state) = guard.get_mut(path) {
@@ -202,7 +202,7 @@ impl StoreHandle {
                 };
                 (None, rx_download)
             } else {
-                let (tx, _) = broadcast::channel::<Result<(), i32>>(1);
+                let (tx, _) = broadcast::channel::<Result<(), u16>>(1);
 
                 let state = FileState {
                     refs: 1,
@@ -220,7 +220,7 @@ impl StoreHandle {
         } else if let Some(ref tx) = tx_download {
             let result = self.store.download_file(path).await.map_err(|err| {
                 err.raw_os_error()
-                    .unwrap_or(rustix::io::Errno::IO.raw_os_error())
+                    .unwrap_or(rustix::io::Errno::IO.raw_os_error()) as u16
             });
             let _ = tx.send(result);
             let mut guard = self.store.present_files.lock().unwrap();
