@@ -20,6 +20,15 @@ access_key_id = GK_ACCESS
 secret_access_key = GK_SECRETSECRETSECRET
 endpoint = http://garage:3900
 EOF
+COPY <<EOF /root/.aws/config
+[default]
+endpoint_url = http://garage:3900
+EOF
+COPY <<EOF /root/.aws/credentials
+[default]
+aws_secret_access_key = GK_SECRETSECRETSECRET
+aws_access_key_id = GK_ACCESS
+EOF
 COPY --from=zig_downloader /usr/bin/zig /usr/bin/zig
 COPY --from=zig_downloader /usr/lib/zig /usr/lib/zig
 RUN grep -vE "alias .*='\w+ -i'" /root/.bashrc | sponge /root/.bashrc

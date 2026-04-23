@@ -4,6 +4,8 @@ services:
             dockerfile: "dev.Containerfile"
         volumes:
             - "..:/workspaces/dls3"
+        cap_add:
+            - "SYS_ADMIN" # so i can mount stuff
 
     garage:
         image: "dxflrs/garage:v2.3.0"
