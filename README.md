@@ -33,3 +33,11 @@ The daemon is passed command-line arguments to specify the bucket, prefix, backi
 - Writes are not synced to S3 until the file is closed
 - Paths must be UTF-8
 - The victim observes the mountpoint to be a symbolic link that resolves to the backing store. This creates less-than-intuitive behavior for paths that escape the mountpoint, e.g. if the mountpoint is `/mnt/neer` and the backing store is at `/home/neer/.local/state/store`, `/mnt/neer/../foo.txt` will point to `/home/neer/.local/state/foo.txt` instead of `/mnt/foo.txt`. But, paths containing `..` that don't escape the mountpoint (e.g. `/mnt/neer/foo/bar/../../baz`) work fine.
+
+## Major tasks
+
+- [x] Demo
+- [ ] Daemon knows when files are closed and can reclaim their space
+- [ ] Preiodically check S3 for new/changed files
+- [ ] Hook into more functions
+- [ ] Handle writing files
