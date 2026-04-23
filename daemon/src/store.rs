@@ -25,6 +25,7 @@ use crate::config::Config;
 pub struct Store {
     client: Client,
     config: Config,
+    #[expect(dead_code)]
     root_path: String,
     root_fd: rustix::fd::OwnedFd,
     present_files: Mutex<HashMap<String, FileState>>,
@@ -56,7 +57,7 @@ enum FileDownloadStatus {
 pub enum InitError {
     #[snafu(display("Could not list objects in bucket {bucket}"))]
     S3 {
-        source: SdkError<ListObjectsV2Error>,
+        source: Box<SdkError<ListObjectsV2Error>>,
         bucket: String,
     },
     #[snafu(display("Could not create {path} in backing store"))]
@@ -80,7 +81,7 @@ impl Store {
 
         let mut path = PathBuf::from(config.backing_path.as_ref());
         while let Some(page_result) = pages.next().await {
-            let page = page_result.context(S3Snafu {
+            let page = page_result.map_err(Box::new).context(S3Snafu {
                 bucket: config.bucket.as_ref(),
             })?;
             for object in page.contents() {
