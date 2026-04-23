@@ -72,6 +72,12 @@ pub enum InitError {
 impl Store {
     /// Initialize a backing store with sparse files from the contents of an S3 bucket
     pub async fn new(client: &Client, config: Config) -> Result<Arc<Store>, InitError> {
+        tokio::fs::create_dir_all(config.backing_path.as_ref())
+            .await
+            .with_context(|_| IoSnafu {
+                path: config.backing_path.to_owned(),
+            })?;
+
         let mut pages = client
             .list_objects_v2()
             .bucket(config.bucket.as_ref())
