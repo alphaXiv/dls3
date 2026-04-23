@@ -12,8 +12,8 @@ attempt() {
     chosen_mirror="$(shuf -n 1 $mirrorlist_file || return 2)"
     echo "Attempting to download from $chosen_mirror"
     tarball="zig-$(uname -m)-linux-0.16.0.tar.xz"
-    curl -fsSL "$chosen_mirror/$tarball?source=https%3A%2F%2Fgithub.com%2F190n%2Fdls3" -o zig.tar.xz || return 1
-    curl -fsSL "$chosen_mirror/$tarball.minisig?source=https%3A%2F%2Fgithub.com%2F190n%2Fdls3" -o zig.tar.xz.minisig || return 1
+    curl -fsSL "$chosen_mirror/$tarball?source=https%3A%2F%2Fgithub.com%2FalphaXiv%2Fdls3" -o zig.tar.xz || return 1
+    curl -fsSL "$chosen_mirror/$tarball.minisig?source=https%3A%2F%2Fgithub.com%2FalphaXiv%2Fdls3" -o zig.tar.xz.minisig || return 1
     trusted_comment="$(minisign -QVm zig.tar.xz -x zig.tar.xz.minisig -P RWSGOq2NVecA2UPNdBUZykf1CCb147pkmdtYxgb3Ti+JO/wCYvhbAb/U || return 1)"
     extracted_filename="$(echo $trusted_comment | sed -E 's/^timestamp:[[:digit:]]+[[:space:]]+file:([^[:space:]]+)[[:space:]]+hashed$/\1/g')"
     [ "$tarball" = "$extracted_filename" ] || return 1
