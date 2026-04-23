@@ -1,0 +1,15 @@
+[
+    {
+        "label": "Debug victim",
+        "program": "${ZED_WORKTREE_ROOT}/victim",
+        "request": "launch",
+        "adapter": "GDB"
+    },
+    {
+        "label": "Debug daemon",
+        "program": "${ZED_WORKTREE_ROOT}/target/debug/daemon",
+        "request": "attach",
+        "adapter": "CodeLLDB",
+        "sourceLanguages": ["rust"]
+    }
+]

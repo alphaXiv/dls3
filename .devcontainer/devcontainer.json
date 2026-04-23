@@ -1,0 +1,6 @@
+{
+    "$schema": "https://raw.githubusercontent.com/devcontainers/spec/refs/heads/main/schemas/devContainer.base.schema.json",
+    "dockerComposeFile": "docker-compose.yml",
+    "service": "dls3",
+    "workspaceFolder": "/workspaces/dls3"
+}

@@ -1,0 +1,31 @@
+services:
+    dls3:
+        build:
+            dockerfile: "dev.Containerfile"
+        volumes:
+            - "..:/workspaces/dls3"
+
+    garage:
+        image: "dxflrs/garage:v2.3.0"
+        volumes:
+            - "garage_data:/mnt/garage"
+            - "./garage.toml:/etc/garage.toml:ro"
+        environment:
+            - "GARAGE_DEFAULT_ACCESS_KEY=GK_ACCESS"
+            - "GARAGE_DEFAULT_SECRET_KEY=GK_SECRETSECRETSECRET"
+            - "GARAGE_DEFAULT_BUCKET=garage"
+        entrypoint:
+            [
+                "/garage",
+                "-c",
+                "/etc/garage.toml",
+                "server",
+                "--single-node",
+                "--default-bucket",
+            ]
+        ports:
+            - "3900:3900" # S3
+            - "3901:3901" # RPC
+
+volumes:
+    garage_data:
