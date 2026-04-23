@@ -1,18 +1,20 @@
 //! Functions operating against the backing store
 
 use rustix::{
-    fs::{FallocateFlags, Mode, OFlags, ResolveFlags},
+    fs::{AtFlags, FallocateFlags, Mode, OFlags, ResolveFlags},
     io::Errno,
     path::Arg,
 };
 use snafu::ResultExt;
 use snafu::prelude::Snafu;
 use std::{
+    cmp::Ordering,
     collections::{HashMap, HashSet},
     io,
     os::fd::{AsFd, FromRawFd, IntoRawFd},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, MutexGuard},
+    time::Instant,
 };
 use tokio::sync::broadcast;
 use tracing::{error, trace};
@@ -25,10 +27,12 @@ use crate::config::Config;
 pub struct Store {
     client: Client,
     config: Config,
-    #[expect(dead_code)]
-    root_path: String,
     root_fd: rustix::fd::OwnedFd,
-    present_files: Mutex<HashMap<String, FileState>>,
+    /// TODO: merge these hashmaps, maybe use the hashheap crate
+    /// Files that at least one client is using
+    opened_files: Mutex<HashMap<String, OpenedFileState>>,
+    /// Files that no client is using but we have downloaded the contents of
+    cached_files: Mutex<HashMap<String, CachedFileState>>,
 }
 
 #[derive(Debug)]
@@ -38,9 +42,31 @@ pub struct StoreHandle {
 }
 
 #[derive(Debug)]
-struct FileState {
+struct OpenedFileState {
     refs: u32,
     download_status: FileDownloadStatus,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct CachedFileState {
+    last_access: Instant,
+    size: u64,
+}
+
+impl Ord for CachedFileState {
+    fn cmp(&self, other: &Self) -> Ordering {
+        // larger files are higher priority (evicted first)
+        self.size
+            .cmp(&other.size)
+            // among files of the same size, less-recently-used ones are higher priority
+            .then_with(|| other.last_access.cmp(&self.last_access))
+    }
+}
+
+impl PartialOrd for CachedFileState {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 #[derive(Debug)]
@@ -75,7 +101,7 @@ impl Store {
         tokio::fs::create_dir_all(config.backing_path.as_ref())
             .await
             .with_context(|_| IoSnafu {
-                path: config.backing_path.to_owned(),
+                path: config.backing_path.clone(),
             })?;
 
         let mut pages = client
@@ -121,7 +147,6 @@ impl Store {
 
         Ok(Arc::new(Store {
             client: client.clone(),
-            root_path: config.backing_path.to_string(),
             root_fd: rustix::fs::open(
                 config.backing_path.as_ref(),
                 OFlags::DIRECTORY,
@@ -130,7 +155,8 @@ impl Store {
             .with_context(|_| RustixSnafu {
                 path: path.to_string_lossy(),
             })?,
-            present_files: Mutex::new(HashMap::new()),
+            opened_files: Mutex::new(HashMap::new()),
+            cached_files: Mutex::new(HashMap::new()),
             config,
         }))
     }
@@ -148,7 +174,7 @@ impl Store {
             self.root_fd.as_fd(),
             path,
             OFlags::CREATE | OFlags::WRONLY,
-            Mode::RUSR | Mode::WUSR | Mode::RGRP | Mode::WGRP | Mode::ROTH | Mode::WOTH,
+            Mode::from_bits(0o666).unwrap(),
             ResolveFlags::BENEATH,
         )?;
 
@@ -172,7 +198,47 @@ impl Store {
         };
 
         // reserve space for the full size
-        rustix::fs::fallocate(&fd, FallocateFlags::empty(), 0, len as u64)?;
+        while let Err(err) = rustix::fs::fallocate(&fd, FallocateFlags::empty(), 0, len as u64) {
+            if err == Errno::NOSPC {
+                let maybe_evictable_entry = {
+                    let mut guard = self.cached_files.lock().unwrap();
+                    let maybe_entry = guard.iter().max_by_key(|(_key, cache_state)| *cache_state);
+                    if let Some((key, _cache_state)) = maybe_entry {
+                        // TODO: do something better
+                        let owned_key = key.to_string();
+                        Some(guard.remove_entry(&owned_key).unwrap())
+                    } else {
+                        None
+                    }
+                };
+                if let Some(evictable_entry) = maybe_evictable_entry {
+                    trace!(
+                        key = evictable_entry.0,
+                        size = evictable_entry.1.size,
+                        "evicting"
+                    );
+                    let evict_fd = rustix::fs::openat2(
+                        self.root_fd.as_fd(),
+                        evictable_entry.0,
+                        OFlags::WRONLY,
+                        Mode::empty(),
+                        ResolveFlags::BENEATH,
+                    )?;
+                    // clear space
+                    rustix::fs::fallocate(
+                        evict_fd,
+                        FallocateFlags::PUNCH_HOLE | FallocateFlags::KEEP_SIZE,
+                        0,
+                        evictable_entry.1.size,
+                    )?;
+                    // retry
+                } else {
+                    return Err(io::Error::from(err));
+                }
+            } else {
+                return Err(io::Error::from(err));
+            }
+        }
 
         let result = self
             .client
@@ -191,13 +257,73 @@ impl Store {
         .await?;
         Ok(())
     }
+
+    fn release_file<'a>(
+        self: &'a Store,
+        path: &str,
+        opened_files_guard: Option<&mut MutexGuard<'a, HashMap<String, OpenedFileState>>>,
+    ) {
+        let maybe_owned_path = {
+            let mut owned_guard: MutexGuard<HashMap<String, OpenedFileState>>;
+            let guard = match opened_files_guard {
+                Some(g) => g,
+                None => {
+                    owned_guard = self.opened_files.lock().unwrap();
+                    &mut owned_guard
+                }
+            };
+            if let Some(file) = guard.get_mut(path) {
+                file.refs -= 1;
+                if file.refs == 0 {
+                    Some(guard.remove_entry(path).unwrap().0)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        };
+
+        if let Some(owned_path) = maybe_owned_path {
+            trace!(owned_path, "releasing file to cache");
+            let Ok(stat) = rustix::fs::statat(self.root_fd.as_fd(), path, AtFlags::empty()) else {
+                return;
+            };
+            if stat.st_size == 0 {
+                return;
+            }
+            let mut guard = self.cached_files.lock().unwrap();
+            guard.insert(
+                owned_path,
+                CachedFileState {
+                    last_access: Instant::now(),
+                    size: stat.st_size as u64,
+                },
+            );
+        }
+    }
 }
 
 impl StoreHandle {
     /// Error is an errno value.
     pub async fn open_file(&mut self, path: &str) -> Result<(), u16> {
+        if let Some((owned_path, _)) = self.store.cached_files.lock().unwrap().remove_entry(path) {
+            trace!(path, "reviving cached entry");
+            self.store
+                .opened_files
+                .lock()
+                .unwrap()
+                .entry(owned_path)
+                .or_insert(OpenedFileState {
+                    refs: 0,
+                    download_status: FileDownloadStatus::Downloaded,
+                })
+                .refs += 1;
+            return Ok(());
+        }
+
         let (tx_download, mut rx_download) = {
-            let mut guard = self.store.present_files.lock().unwrap();
+            let mut guard = self.store.opened_files.lock().unwrap();
             if let Some(existing_state) = guard.get_mut(path) {
                 existing_state.refs += 1;
                 let rx_download = match &existing_state.download_status {
@@ -210,7 +336,7 @@ impl StoreHandle {
             } else {
                 let (tx, _) = broadcast::channel::<Result<(), u16>>(1);
 
-                let state = FileState {
+                let state = OpenedFileState {
                     refs: 1,
                     download_status: FileDownloadStatus::Downloading {
                         download_result_channel: tx.clone(),
@@ -222,14 +348,14 @@ impl StoreHandle {
         };
 
         let result = if let Some(ref mut rx) = rx_download {
-            rx.recv().await.unwrap()
+            rx.recv().await.unwrap() // TODO investigate
         } else if let Some(ref tx) = tx_download {
             let result = self.store.download_file(path).await.map_err(|err| {
                 err.raw_os_error()
                     .unwrap_or(rustix::io::Errno::IO.raw_os_error()) as u16
             });
             let _ = tx.send(result);
-            let mut guard = self.store.present_files.lock().unwrap();
+            let mut guard = self.store.opened_files.lock().unwrap();
             match result {
                 Ok(_) => {
                     if let Some(state) = guard.get_mut(path) {
@@ -261,5 +387,25 @@ impl StoreHandle {
         }
 
         result
+    }
+
+    pub fn close_file(&mut self, path: &str) {
+        self.store.release_file(path, None);
+        self.opened_files.remove(path);
+    }
+}
+
+impl Drop for StoreHandle {
+    fn drop(&mut self) {
+        trace!(
+            "cleaning {} files left open by client",
+            self.opened_files.len()
+        );
+        if !self.opened_files.is_empty() {
+            let mut guard = self.store.opened_files.lock().unwrap();
+            for key in &self.opened_files {
+                self.store.release_file(key, Some(&mut guard));
+            }
+        }
     }
 }

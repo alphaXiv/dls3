@@ -37,7 +37,7 @@ The daemon is passed command-line arguments to specify the bucket, prefix, backi
 ## Major tasks
 
 - [x] Demo
-- [ ] Daemon knows when files are closed and can reclaim their space
+- [x] Daemon knows when files are closed and can reclaim their space
 - [ ] Preiodically check S3 for new/changed files
 - [ ] Hook into more functions
 - [ ] Handle writing files

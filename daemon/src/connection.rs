@@ -28,7 +28,7 @@ pub async fn handle_client(mut stream: UnixStream, store: Arc<Store>) -> Result<
                 .await
                 .whatever_context("could not send message")?;
             }
-            ClientMessage::Close { .. } => todo!(),
+            ClientMessage::Close { path } => handle.close_file(&path),
         }
     }
     Ok(())

@@ -12,7 +12,6 @@ pub enum ClientMessage {
     Open {
         path: String,
     },
-    #[expect(dead_code)]
     Close {
         path: String,
     },

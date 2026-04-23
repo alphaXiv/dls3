@@ -74,3 +74,21 @@ pub fn open(pathname: [*:0]const c_char, flags: c_int, mode: std.c.mode_t) callc
         return result;
     }
 }
+
+fn closeImpl(state: *State, fd: c_int) !void {
+    const key = (try path.resolveOpenedFdToKey(state.io(), state.allocator(), state.config, fd)) orelse return;
+    try protocol.writeMessage(state.writer(), &.{ .close = .{ .path = key } });
+}
+
+pub fn close(fd: c_int) callconv(.c) c_int {
+    const realClose: *const fn (c_int) callconv(.c) c_int = @ptrCast(@alignCast(c.dlsym(c.RTLD_NEXT, "close")));
+
+    const state = State.get(&hardcoded_config) catch return realClose(fd);
+    defer state.errno.clear();
+    defer _ = state.arena.reset(.retain_capacity);
+
+    closeImpl(state, fd) catch |err| {
+        std.log.err("close({d}): {s}", .{ fd, @errorName(err) });
+    };
+    return realClose(fd);
+}

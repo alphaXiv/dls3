@@ -8,7 +8,7 @@ All numbers are little-endian unless otherwise specified.
 
 Client messages:
 - Tag 0: request to open a file. Payload is the object key.
-- Tag 1: request to close a file. Payload is the object key.
+- Tag 1: inform that the victim has closed a file. Payload is the object key.
 
 Server messages:
 - Tag 0: response to open request. Payload is the errno value (u16, 0 for success).

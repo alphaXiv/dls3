@@ -17,6 +17,7 @@ comptime {
 }
 
 export const open = @import("fns/fcntl.zig").open;
+export const close = @import("fns/fcntl.zig").close;
 
 fn tryInit() !void {
     const fd = try std.posix.openat(std.posix.AT.FDCWD, hardcoded_config.backing_path, .{ .ACCMODE = .RDONLY, .DIRECTORY = true }, 0);
