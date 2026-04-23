@@ -25,6 +25,7 @@ fn tryInit() !void {
     switch (std.os.linux.errno(new_fd)) {
         .SUCCESS => if (new_fd != hardcoded_config.backing_fd) {
             _ = std.os.linux.close(@intCast(new_fd));
+            std.log.err("got fd {} instead", .{new_fd});
             return error.GotWrongFd;
         },
         else => return error.FailedDupFd,
@@ -32,6 +33,7 @@ fn tryInit() !void {
 }
 
 fn init() callconv(.c) void {
+    std.log.info("init hook for process {}, thread {}", .{ std.os.linux.getpid(), std.os.linux.gettid() });
     tryInit() catch |e| {
         // TODO: get this to print only once across multiple processes
         std.log.err("error initializing dls3: {s}", .{@errorName(e)});
