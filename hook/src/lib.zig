@@ -7,6 +7,7 @@ pub const path = @import("path.zig");
 pub const State = @import("state.zig").State;
 pub const c = @import("c.zig");
 pub const Errno = @import("errno.zig");
+pub const wrappers = @import("wrappers.zig");
 
 comptime {
     if (@import("builtin").target.os.tag != .linux) @compileError("only linux is supported");
@@ -17,7 +18,9 @@ comptime {
 }
 
 export const open = @import("fns/fcntl.zig").open;
+export const openat = @import("fns/fcntl.zig").openat;
 export const close = @import("fns/fcntl.zig").close;
+export const fopen = @import("fns/fcntl.zig").fopen;
 
 fn tryInit() !void {
     const fd = try std.posix.openat(std.posix.AT.FDCWD, hardcoded_config.backing_path, .{ .ACCMODE = .RDONLY, .DIRECTORY = true }, 0);

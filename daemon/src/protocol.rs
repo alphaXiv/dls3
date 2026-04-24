@@ -9,12 +9,8 @@ use tracing::trace;
 
 #[derive(Debug)]
 pub enum ClientMessage {
-    Open {
-        path: String,
-    },
-    Close {
-        path: String,
-    },
+    Open { path: String },
+    Close { path: String },
 }
 
 #[derive(Debug)]

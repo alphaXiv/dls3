@@ -27,6 +27,22 @@ The daemon is passed command-line arguments to specify the bucket, prefix, backi
 - When a file is written, the write is done against the backing file and the daemon marks the file as dirty. The modified version is uploaded to S3 shortly after it is closed.
 - Periodically, the daemon checks S3 and downloads new versions of objects that have been modified.
 
+What the hook does in response to various operations:
+
+- After the victim opens a file, notify the daemon
+- Before the victim closes a file, notify the daemon
+
+Later on, it will also need to:
+
+- Before the victim reads a file, possibly block until that data is available
+- After the victim writes to a file, notify that the file is dirty
+
+More interesting issues:
+
+- What if you try to move a file from outside to inside the mountpoint? (it should probably act as though you tried to rename over a filesystem boundary, and force the victim to do a copy)
+- What if you rename a file within the mountpoint? (it should probably do a rename in S3)
+- What if you mmap? (probably read-only can be treated like opening for reading and a writable map can be treated as immediately dirtying the file)
+
 ## Limitations
 
 - Objects larger than the disk used for the backing store do not work
@@ -41,3 +57,5 @@ The daemon is passed command-line arguments to specify the bucket, prefix, backi
 - [ ] Preiodically check S3 for new/changed files
 - [ ] Hook into more functions
 - [ ] Handle writing files
+- [ ] Strip prefix from paths
+- [ ] Easy wrapper

@@ -9,71 +9,87 @@ const Errno = hook.Errno;
 const linux = std.os.linux;
 const mode_t = linux.mode_t;
 
-fn openImpl(
-    state: *State,
-    realOpen: *const fn ([*:0]const c_char, c_int, mode_t) callconv(.c) c_int,
-    pathname: [*:0]const c_char,
-    flags: c_int,
-    mode: mode_t,
-) !c_int {
-    const flags_struct: linux.O = @bitCast(flags);
-    if (flags_struct.ACCMODE != .RDONLY) {
-        state.errno.errno = .ROFS;
-        return error.Errno;
-    } else if (flags_struct.CREAT) {
-        state.errno.errno = .ROFS;
-        return error.Errno;
-    } else if (flags_struct.TMPFILE) {
-        state.errno.errno = .OPNOTSUPP;
-        return error.Errno;
-    }
-
-    const fd = realOpen(pathname, flags, mode);
-    if (fd < 0) return fd;
-    errdefer _ = linux.close(fd);
-
-    const key = (try path.resolveOpenedFdToKey(state.io(), state.allocator(), state.config, fd)) orelse return fd;
-    try protocol.writeMessage(state.writer(), &.{ .open = .{ .path = key } });
-    while (true) {
-        const response = try protocol.readMessage(state.reader(), state.allocator());
-        switch (response) {
-            .opened => |o| {
-                if (o.errno != .SUCCESS) {
-                    state.errno.errno = o.errno;
-                    return error.Errno;
-                } else {
-                    return fd;
-                }
-            },
-        }
-    }
-}
-
-pub fn open(pathname: [*:0]const c_char, flags: c_int, mode: std.c.mode_t) callconv(.c) c_int {
+pub const open = hook.wrappers.wrapOpen(
     // `open()` is actually variadic instead of taking a `mode_t` parameter. But Zig doesn't support
     // reading variadic arguments on aarch64. So we type-pun to a non-variadic `mode_t` parameter,
     // which is equivalent on Linux x86_64 and aarch64. Before porting to another platform you will
     // need to ensure that this works.
-    const realOpen: *const fn ([*:0]const c_char, c_int, mode_t) callconv(.c) c_int = @ptrCast(@alignCast(c.dlsym(c.RTLD_NEXT, "open")));
-
-    const state = State.get(&hardcoded_config) catch return realOpen(pathname, flags, mode);
-    defer state.errno.clear();
-    defer _ = state.arena.reset(.retain_capacity);
-
-    const result = openImpl(state, realOpen, pathname, flags, mode) catch |err| bad_result: {
-        if (err != error.Errno) {
-            std.log.err("open({s}): {s}", .{ pathname, @errorName(err) });
-            state.errno.errno = .IO;
+    fn (pathname: [*:0]const c_char, flags: c_int, mode: mode_t) callconv(.c) c_int,
+    "open",
+    struct {
+        fn adapter(
+            realOpen: *const fn ([*:0]const c_char, c_int, mode_t) callconv(.c) c_int,
+            args: struct { [*:0]const c_char, c_int, mode_t },
+        ) hook.wrappers.OpenAdapterReturn(c_int) {
+            const pathname, const flags, const mode = args;
+            const fd = realOpen(pathname, flags, mode);
+            return .{
+                .value = fd,
+                .fd = if (fd < 0) null else fd,
+            };
         }
-        break :bad_result -1;
-    };
-    if (state.errno.errno) |errno| {
-        c.__errno_location().* = @intFromEnum(errno);
-        return -1;
-    } else {
-        return result;
-    }
-}
+    }.adapter,
+    struct {
+        fn close(fd: c_int) void {
+            _ = linux.close(fd);
+        }
+    }.close,
+    -1,
+);
+
+pub const openat = hook.wrappers.wrapOpen(
+    // `openat()` is actually variadic instead of taking a `mode_t` parameter. But Zig doesn't support
+    // reading variadic arguments on aarch64. So we type-pun to a non-variadic `mode_t` parameter,
+    // which is equivalent on Linux x86_64 and aarch64. Before porting to another platform you will
+    // need to ensure that this works.
+    fn (dirfd: c_int, pathname: [*:0]const c_char, flags: c_int, mode: mode_t) callconv(.c) c_int,
+    "openat",
+    struct {
+        fn adapter(
+            realOpenat: *const fn (dirfd: c_int, pathname: [*:0]const c_char, flags: c_int, mode: mode_t) callconv(.c) c_int,
+            args: struct { c_int, [*:0]const c_char, c_int, mode_t },
+        ) hook.wrappers.OpenAdapterReturn(c_int) {
+            const dirfd, const pathname, const flags, const mode = args;
+            const fd = realOpenat(dirfd, pathname, flags, mode);
+            return .{
+                .value = fd,
+                .fd = if (fd < 0) null else fd,
+            };
+        }
+    }.adapter,
+    struct {
+        fn close(fd: c_int) void {
+            _ = linux.close(fd);
+        }
+    }.close,
+    -1,
+);
+
+pub const fopen = hook.wrappers.wrapOpen(
+    fn (pathname: [*:0]const c_char, mode: [*:0]const c_char) callconv(.c) ?*c.FILE,
+    "fopen",
+    struct {
+        fn adapter(
+            realFopen: *const fn (pathname: [*:0]const c_char, mode: [*:0]const c_char) callconv(.c) ?*c.FILE,
+            args: struct { [*:0]const c_char, [*:0]const c_char },
+        ) hook.wrappers.OpenAdapterReturn(?*c.FILE) {
+            const pathname, const mode = args;
+            const fp = realFopen(pathname, mode);
+            return .{
+                .value = fp,
+                .fd = if (fp) |nonnull| c.fileno(nonnull) else null,
+            };
+        }
+    }.adapter,
+    struct {
+        fn close(stream: ?*c.FILE) void {
+            if (stream) |nonnull| {
+                _ = c.fclose(nonnull);
+            }
+        }
+    }.close,
+    null,
+);
 
 fn closeImpl(state: *State, fd: c_int) !void {
     const key = (try path.resolveOpenedFdToKey(state.io(), state.allocator(), state.config, fd)) orelse return;

@@ -19,7 +19,11 @@ use std::{
 use tokio::sync::broadcast;
 use tracing::{error, trace};
 
-use aws_sdk_s3::{Client, error::SdkError, operation::list_objects_v2::ListObjectsV2Error};
+use aws_sdk_s3::{
+    Client,
+    error::{ProvideErrorMetadata, SdkError},
+    operation::list_objects_v2::ListObjectsV2Error,
+};
 
 use crate::config::Config;
 
@@ -190,7 +194,15 @@ impl Store {
                 .await
                 .map_err(|err| {
                     error!(?path, ?err, "failed to HEAD S3 object");
-                    io::Error::from_raw_os_error(rustix::io::Errno::IO.raw_os_error())
+                    io::Error::from_raw_os_error(Errno::raw_os_error(
+                        match err.into_service_error() {
+                            aws_sdk_s3::operation::head_object::HeadObjectError::NotFound(_) => {
+                                Errno::NOENT
+                            }
+                            whatever if whatever.code() == Some("AccessDenied") => Errno::ACCESS,
+                            _ => Errno::IO,
+                        },
+                    ))
                 })?;
             head.content_length().unwrap_or(0)
         } else {
@@ -249,7 +261,11 @@ impl Store {
             .await
             .map_err(|err| {
                 error!(?path, ?err, "failed to download S3 object");
-                io::Error::from_raw_os_error(rustix::io::Errno::IO.raw_os_error())
+                io::Error::from_raw_os_error(Errno::raw_os_error(match err.into_service_error() {
+                    aws_sdk_s3::operation::get_object::GetObjectError::NoSuchKey(_) => Errno::NOENT,
+                    whatever if whatever.code() == Some("AccessDenied") => Errno::ACCESS,
+                    _ => Errno::IO,
+                }))
             })?;
         let _ = tokio::io::copy(&mut result.body.into_async_read(), &mut unsafe {
             tokio::fs::File::from_raw_fd(fd.into_raw_fd())
