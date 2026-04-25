@@ -1,13 +1,15 @@
 const std = @import("std");
 
+// re-exports
 pub const protocol = @import("protocol.zig");
 pub const Config = @import("config.zig").Config;
 pub const hardcoded_config = @import("config.zig").hardcoded_config;
 pub const path = @import("path.zig");
-pub const State = @import("state.zig").State;
+pub const State = @import("state.zig");
 pub const c = @import("c.zig");
-pub const Errno = @import("errno.zig");
 pub const wrappers = @import("wrappers.zig");
+pub const fns = @import("fns.zig");
+pub const Functions = fns.Functions;
 
 comptime {
     if (@import("builtin").target.os.tag != .linux) @compileError("only linux is supported");
@@ -17,13 +19,20 @@ comptime {
     }
 }
 
-export const open = @import("fns/fcntl.zig").open;
-export const openat = @import("fns/fcntl.zig").openat;
 export const close = @import("fns/fcntl.zig").close;
-export const fopen = @import("fns/fcntl.zig").fopen;
+export const creat = @import("fns/fcntl.zig").creat;
+export const creat64 = creat;
+export const open = @import("fns/fcntl.zig").open;
+export const open64 = open;
+export const openat = @import("fns/fcntl.zig").openat;
+export const openat64 = openat;
+
+export const fclose = @import("fns/stdio.zig").fclose;
+export const fopen = @import("fns/stdio.zig").fopen;
+export const fopen64 = fopen;
 
 fn tryInit() !void {
-    const fd = try std.posix.openat(std.posix.AT.FDCWD, hardcoded_config.backing_path, .{ .ACCMODE = .RDONLY, .DIRECTORY = true }, 0);
+    const fd = try std.posix.openat(std.posix.AT.FDCWD, hardcoded_config.backing_path, .{ .ACCMODE = .RDONLY, .DIRECTORY = true, .CLOEXEC = true }, 0);
     defer _ = std.os.linux.close(fd);
     const new_fd = std.os.linux.fcntl(fd, std.os.linux.F.DUPFD, @intCast(hardcoded_config.backing_fd));
     switch (std.os.linux.errno(new_fd)) {
