@@ -14,7 +14,7 @@ pub fn build(b: *std.Build) void {
     mod.addImport("hook", mod);
 
     const lib = b.addLibrary(.{
-        .name = "hook",
+        .name = "dls3_hook",
         .root_module = mod,
         .linkage = .dynamic,
     });

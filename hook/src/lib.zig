@@ -19,20 +19,12 @@ comptime {
     }
 }
 
-export const close = @import("fns/fcntl.zig").close;
-export const creat = @import("fns/fcntl.zig").creat;
-export const creat64 = creat;
-export const open = @import("fns/fcntl.zig").open;
-export const open64 = open;
-export const openat = @import("fns/fcntl.zig").openat;
-export const openat64 = openat;
-
-export const fclose = @import("fns/stdio.zig").fclose;
-export const fopen = @import("fns/stdio.zig").fopen;
-export const fopen64 = fopen;
-
 fn tryInit() !void {
-    const fd = try std.posix.openat(std.posix.AT.FDCWD, hardcoded_config.backing_path, .{ .ACCMODE = .RDONLY, .DIRECTORY = true, .CLOEXEC = true }, 0);
+    const fd = try std.posix.openat(std.posix.AT.FDCWD, hardcoded_config.backing_path, .{
+        .ACCMODE = .RDONLY,
+        .DIRECTORY = true,
+        .CLOEXEC = true,
+    }, 0);
     defer _ = std.os.linux.close(fd);
     const new_fd = std.os.linux.fcntl(fd, std.os.linux.F.DUPFD, @intCast(hardcoded_config.backing_fd));
     switch (std.os.linux.errno(new_fd)) {
@@ -54,3 +46,7 @@ fn init() callconv(.c) void {
 }
 
 export const init_array: [1]*const fn () callconv(.c) void linksection(".init_array") = .{&init};
+
+comptime {
+    std.testing.refAllDecls(fns);
+}

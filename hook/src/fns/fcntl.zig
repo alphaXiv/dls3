@@ -4,6 +4,10 @@ const State = hook.State;
 const linux = std.os.linux;
 const fns = hook.fns;
 
+fn closeFileDescriptor(_: *State, fd: c_int) void {
+    _ = linux.close(fd);
+}
+
 pub const creat = hook.wrappers.wrapOpen(
     .creat,
     struct {
@@ -16,14 +20,11 @@ pub const creat = hook.wrappers.wrapOpen(
             return .{
                 .value = fd,
                 .fd = if (fd < 0) null else fd,
+                .writable = true,
             };
         }
     }.adapter,
-    struct {
-        fn close(_: *State, fd: c_int) void {
-            _ = linux.close(fd);
-        }
-    }.close,
+    closeFileDescriptor,
     -1,
 );
 
@@ -39,14 +40,11 @@ pub const open = hook.wrappers.wrapOpen(
             return .{
                 .value = fd,
                 .fd = if (fd < 0) null else fd,
+                .writable = @as(linux.O, @bitCast(flags)).ACCMODE != .RDONLY,
             };
         }
     }.adapter,
-    struct {
-        fn close(_: *State, fd: c_int) void {
-            _ = linux.close(fd);
-        }
-    }.close,
+    closeFileDescriptor,
     -1,
 );
 
@@ -62,23 +60,10 @@ pub const openat = hook.wrappers.wrapOpen(
             return .{
                 .value = fd,
                 .fd = if (fd < 0) null else fd,
+                .writable = @as(linux.O, @bitCast(flags)).ACCMODE != .RDONLY,
             };
         }
     }.adapter,
-    struct {
-        fn close(_: *State, fd: c_int) void {
-            _ = linux.close(fd);
-        }
-    }.close,
-    -1,
-);
-
-pub const close = hook.wrappers.wrapClose(
-    .close,
-    struct {
-        fn adapter(args: struct { c_int }) c_int {
-            return args[0];
-        }
-    }.adapter,
+    closeFileDescriptor,
     -1,
 );

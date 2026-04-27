@@ -9,10 +9,9 @@ const c = hook.c;
 const mode_t = std.os.linux.mode_t;
 
 pub const Functions = struct {
-    // fcntl
-    close: *const fn (fd: c_int) callconv(.c) c_int,
-    // close_range
-    // closefrom
+    // -- fcntl.h --
+    // TODO: close_range
+    // TODO: closefrom
     creat: *const fn (filename: [*:0]const c_char, mode: mode_t) callconv(.c) c_int,
     // `open()` and `openat()` are actually variadic instead of taking a `mode_t` parameter. But Zig doesn't support
     // reading variadic arguments on aarch64. So we type-pun to a non-variadic `mode_t` parameter,
@@ -20,13 +19,17 @@ pub const Functions = struct {
     // need to ensure that this works.
     open: *const fn (pathname: [*:0]const c_char, flags: c_int, mode: mode_t) callconv(.c) c_int,
     openat: *const fn (dirfd: c_int, pathname: [*:0]const c_char, flags: c_int, mode: mode_t) callconv(.c) c_int,
-    // openat2
+    // TODO: openat2 (glibc 2.43 just added a wrapper)
 
-    // stdio
+    // -- stdio.h --
     fclose: *const fn (stream: ?*c.FILE) callconv(.c) c_int,
-    // fcloseall
+    // TODO: fcloseall
     fopen: *const fn (pathname: [*:0]const c_char, mode: [*:0]const c_char) callconv(.c) ?*c.FILE,
-    // freopen
+    // TODO: freopen
+
+    // -- unistd.h --
+    close: *const fn (fd: c_int) callconv(.c) c_int,
+    // TODO: syscall
 };
 
 pub const FunctionId = std.meta.FieldEnum(Functions);
@@ -42,3 +45,17 @@ pub fn FunctionArgs(id: FunctionId) type {
 pub fn FunctionReturn(id: FunctionId) type {
     return @typeInfo(@typeInfo(FunctionPtr(id)).pointer.child).@"fn".return_type.?;
 }
+
+// exports
+export const creat = @import("fns/fcntl.zig").creat;
+export const creat64 = creat;
+export const open = @import("fns/fcntl.zig").open;
+export const open64 = open;
+export const openat = @import("fns/fcntl.zig").openat;
+export const openat64 = openat;
+
+export const fclose = @import("fns/stdio.zig").fclose;
+export const fopen = @import("fns/stdio.zig").fopen;
+export const fopen64 = fopen;
+
+export const close = @import("fns/unistd.zig").close;

@@ -13,8 +13,11 @@ const FunctionReturn = hook.fns.FunctionReturn;
 pub fn OpenAdapterReturn(comptime T: type) type {
     return struct {
         value: T,
-        // null on error
+        /// Null on error
         fd: ?c_int,
+        /// Whether the file was opened for writing. If true, and the file is under the mountpoint,
+        /// we will return EROFS.
+        writable: bool,
     };
 }
 
@@ -38,6 +41,7 @@ pub fn wrapOpen(
 
     const fallibleTupleWrapper = struct {
         fn wrapper(args: Args) !Ret {
+            std.log.debug("{s}({any})", .{ @tagName(id), args });
             const state = try State.get(&hook.hardcoded_config);
             defer _ = state.arena.reset(.retain_capacity);
 
@@ -58,6 +62,14 @@ pub fn wrapOpen(
                 std.log.err("realpath failed: {s}", .{@errorName(err)});
                 return result.value;
             }) orelse return result.value;
+
+            // if the file is under the mountpoint, prevent writing
+            if (result.writable) {
+                c.__errno_location().* = @intFromEnum(E.ROFS);
+                set_specific_errno = true;
+                return error.Errno;
+            }
+
             try hook.protocol.writeMessage(state.writer(), &.{ .open = .{ .path = key } });
             const response = try hook.protocol.readMessage(state.reader(), state.allocator());
             switch (response) {

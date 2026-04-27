@@ -1,3 +1,4 @@
+const std = @import("std");
 const hook = @import("hook");
 const fns = hook.fns;
 const c = hook.c;
@@ -14,6 +15,11 @@ pub const fopen = hook.wrappers.wrapOpen(
             return .{
                 .value = fp,
                 .fd = if (fp) |nonnull| c.fileno(nonnull) else null,
+                // only try to parse the mode string if fopen() succeeded
+                .writable = if (fp != null) w: {
+                    const slice: [:0]const u8 = @ptrCast(std.mem.span(mode));
+                    break :w slice.len > 1 and (slice[0] != 'r' or std.mem.findScalar(u8, slice, '+') != null);
+                } else true,
             };
         }
     }.adapter,
