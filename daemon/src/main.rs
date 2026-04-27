@@ -1,6 +1,6 @@
-use std::str::FromStr;
+use std::{io::ErrorKind, str::FromStr};
 
-use snafu::ResultExt;
+use snafu::{ResultExt, whatever};
 use tokio::net::UnixListener;
 use tracing::{info, warn};
 use tracing_subscriber::{EnvFilter, Layer, layer::SubscriberExt};
@@ -33,6 +33,15 @@ async fn main() -> Result<(), snafu::Whatever> {
 
     info!("created backing store in {}", CONFIG.backing_path);
 
+    match tokio::fs::remove_file(CONFIG.socket_path.as_ref()).await {
+        Ok(()) => {}
+        Err(err) if err.kind() == ErrorKind::NotFound => {}
+        Err(err) => whatever!(
+            Err(err),
+            "failed to unlink socket at {}",
+            CONFIG.socket_path
+        ),
+    };
     let listener = UnixListener::bind(CONFIG.socket_path.as_ref())
         .with_whatever_context(|_| format!("could not listen at {}", CONFIG.socket_path))?;
 

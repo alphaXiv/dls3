@@ -1,4 +1,4 @@
-use std::borrow::Cow;
+use std::{borrow::Cow, time::Duration};
 
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -11,6 +11,11 @@ pub struct Config {
     pub prefix: Cow<'static, str>,
     pub backing_path: Cow<'static, str>,
     pub socket_path: Cow<'static, str>,
+    /// How frequently to scan the entire bucket for new/deleted files.
+    pub refetch_all_interval: Duration,
+    /// How frequently to check for updated versions of opened files.
+    #[expect(dead_code)]
+    pub refetch_open_interval: Duration,
 }
 
 /// Hardcoded config during development
@@ -24,4 +29,6 @@ pub const CONFIG: Config = Config {
     prefix: Cow::Borrowed(""),
     backing_path: Cow::Borrowed("/root/dls3-store"),
     socket_path: Cow::Borrowed("/root/dls3.sock"),
+    refetch_all_interval: Duration::from_secs(30),
+    refetch_open_interval: Duration::from_secs(5),
 };

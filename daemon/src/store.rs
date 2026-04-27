@@ -55,6 +55,7 @@ struct OpenedFileState {
 struct CachedFileState {
     last_access: Instant,
     size: u64,
+    etag: Option<String>,
 }
 
 impl Ord for CachedFileState {
@@ -80,7 +81,9 @@ enum FileDownloadStatus {
         /// once it completes
         download_result_channel: broadcast::Sender<Result<(), u16>>,
     },
-    Downloaded,
+    Downloaded {
+        etag: Option<String>,
+    },
 }
 
 #[derive(Debug, Snafu)]
@@ -108,48 +111,7 @@ impl Store {
                 path: config.backing_path.clone(),
             })?;
 
-        let mut pages = client
-            .list_objects_v2()
-            .bucket(config.bucket.as_ref())
-            .prefix(config.prefix.as_ref())
-            .into_paginator()
-            .send();
-
-        let mut path = PathBuf::from(config.backing_path.as_ref());
-        while let Some(page_result) = pages.next().await {
-            let page = page_result.map_err(Box::new).context(S3Snafu {
-                bucket: config.bucket.as_ref(),
-            })?;
-            for object in page.contents() {
-                if let Some(key) = object.key() {
-                    let object_path = Path::new(key);
-                    if let (Some(parent), Some(file_name)) =
-                        (object_path.parent(), object_path.file_name())
-                    {
-                        path.push(parent);
-                        tokio::fs::create_dir_all(&path)
-                            .await
-                            .with_context(|_| IoSnafu {
-                                path: path.to_string_lossy(),
-                            })?;
-                        path.push(file_name);
-                        let file =
-                            tokio::fs::File::create(&path)
-                                .await
-                                .with_context(|_| IoSnafu {
-                                    path: path.to_string_lossy(),
-                                })?;
-                        rustix::fs::ftruncate(file.as_fd(), object.size().unwrap_or(0) as u64)
-                            .with_context(|_| RustixSnafu {
-                                path: path.to_string_lossy(),
-                            })?;
-                    }
-                }
-                path.push(config.backing_path.as_ref());
-            }
-        }
-
-        Ok(Arc::new(Store {
+        let store = Arc::new(Store {
             client: client.clone(),
             root_fd: rustix::fs::open(
                 config.backing_path.as_ref(),
@@ -157,12 +119,30 @@ impl Store {
                 Mode::empty(),
             )
             .with_context(|_| RustixSnafu {
-                path: path.to_string_lossy(),
+                path: config.backing_path.clone(),
             })?,
             opened_files: Mutex::new(HashMap::new()),
             cached_files: Mutex::new(HashMap::new()),
             config,
-        }))
+        });
+        let mut created_files: HashMap<String, bool> = HashMap::new();
+        store.sync_backing_store(&mut created_files).await?;
+
+        let weak = Arc::downgrade(&store);
+        let interval = store.config.refetch_all_interval;
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(interval).await;
+                let Some(store) = weak.upgrade() else {
+                    return;
+                };
+                if let Err(err) = store.sync_backing_store(&mut created_files).await {
+                    error!(?err, "failed to refetch files");
+                }
+            }
+        });
+
+        Ok(store)
     }
 
     pub fn handle(self: Arc<Store>) -> StoreHandle {
@@ -172,7 +152,8 @@ impl Store {
         }
     }
 
-    async fn download_file(self: &Store, path: &str) -> Result<(), io::Error> {
+    /// Returns ETag or an error
+    async fn download_file(self: &Store, path: &str) -> Result<Option<String>, io::Error> {
         // TODO: create enclosing directories if they are missing
         let fd = rustix::fs::openat2(
             self.root_fd.as_fd(),
@@ -271,7 +252,7 @@ impl Store {
             tokio::fs::File::from_raw_fd(fd.into_raw_fd())
         })
         .await?;
-        Ok(())
+        Ok(result.e_tag)
     }
 
     fn release_file<'a>(
@@ -279,7 +260,7 @@ impl Store {
         path: &str,
         opened_files_guard: Option<&mut MutexGuard<'a, HashMap<String, OpenedFileState>>>,
     ) {
-        let maybe_owned_path = {
+        let maybe_owned_path_and_state = {
             let mut owned_guard: MutexGuard<HashMap<String, OpenedFileState>>;
             let guard = match opened_files_guard {
                 Some(g) => g,
@@ -291,7 +272,7 @@ impl Store {
             if let Some(file) = guard.get_mut(path) {
                 file.refs -= 1;
                 if file.refs == 0 {
-                    Some(guard.remove_entry(path).unwrap().0)
+                    Some(guard.remove_entry(path).unwrap())
                 } else {
                     None
                 }
@@ -300,30 +281,135 @@ impl Store {
             }
         };
 
-        if let Some(owned_path) = maybe_owned_path {
-            trace!(owned_path, "releasing file to cache");
+        if let Some((
+            owned_path,
+            OpenedFileState {
+                refs: _,
+                download_status: FileDownloadStatus::Downloaded { etag },
+            },
+        )) = maybe_owned_path_and_state
+        {
+            // if file was unlinked, we don't need to insert it into the cache
             let Ok(stat) = rustix::fs::statat(self.root_fd.as_fd(), path, AtFlags::empty()) else {
                 return;
             };
             if stat.st_size == 0 {
                 return;
             }
+            trace!(path, "releasing file to cache");
             let mut guard = self.cached_files.lock().unwrap();
             guard.insert(
                 owned_path,
                 CachedFileState {
                     last_access: Instant::now(),
                     size: stat.st_size as u64,
+                    etag,
                 },
             );
         }
+    }
+
+    /// Make the contents of the backing store match the S3 bucket by allocating sparse
+    /// `created_files` holds the keys of files already present in the backing store. Keys that are
+    /// in `created_files` but not in S3 will have their backing files deleted.
+    async fn sync_backing_store(
+        self: &Store,
+        created_files: &mut HashMap<String, bool>,
+    ) -> Result<(), InitError> {
+        let mut pages = self
+            .client
+            .list_objects_v2()
+            .bucket(self.config.bucket.as_ref())
+            .prefix(self.config.prefix.as_ref())
+            .into_paginator()
+            .send();
+        let mut path = PathBuf::from(self.config.backing_path.as_ref());
+        for visited in created_files.values_mut() {
+            *visited = false;
+        }
+
+        let mut created: u64 = 0;
+        let mut deleted: u64 = 0;
+
+        while let Some(page_result) = pages.next().await {
+            let page = page_result.map_err(Box::new).context(S3Snafu {
+                bucket: self.config.bucket.as_ref(),
+            })?;
+            for object in page.contents() {
+                if let Some(key) = object.key() {
+                    // if it's in cached_files or opened_files, skip
+                    // (will be handled by refetching *open* files)
+                    // but mark the file as visited
+                    if self.cached_files.lock().unwrap().contains_key(key)
+                        || self.opened_files.lock().unwrap().contains_key(key)
+                    {
+                        *created_files.get_mut(key).unwrap() = true;
+                        continue;
+                    }
+
+                    let object_path = Path::new(key);
+
+                    if let (Some(parent), Some(file_name)) =
+                        (object_path.parent(), object_path.file_name())
+                    {
+                        path.push(parent);
+                        tokio::fs::create_dir_all(&path)
+                            .await
+                            .with_context(|_| IoSnafu {
+                                path: path.to_string_lossy(),
+                            })?;
+                        path.push(file_name);
+                        let file =
+                            tokio::fs::File::create(&path)
+                                .await
+                                .with_context(|_| IoSnafu {
+                                    path: path.to_string_lossy(),
+                                })?;
+                        rustix::fs::ftruncate(file.as_fd(), object.size().unwrap_or(0) as u64)
+                            .with_context(|_| RustixSnafu {
+                                path: path.to_string_lossy(),
+                            })?;
+
+                        if let Some(existing_val_ref) = created_files.get_mut(key) {
+                            *existing_val_ref = true;
+                        } else {
+                            created += 1;
+                            created_files.insert(key.to_string(), true);
+                        }
+                    }
+                }
+                path.push(self.config.backing_path.as_ref());
+            }
+        }
+
+        // make sure we don't try to use these files again
+        {
+            let mut guard = self.cached_files.lock().unwrap();
+            for (key, _visited) in created_files.iter().filter(|(_key, visited)| !*visited) {
+                guard.remove(key);
+            }
+        }
+        // now delete them
+        for (key, _visited) in created_files.iter().filter(|(_key, visited)| !*visited) {
+            rustix::fs::unlinkat(self.root_fd.as_fd(), key, AtFlags::empty())
+                .with_context(|_| RustixSnafu { path: key })?;
+            deleted += 1;
+        }
+        // clean up keys
+        created_files.retain(|_key, visited| *visited);
+
+        trace!("sync: created {created} files, deleted {deleted}");
+
+        Ok(())
     }
 }
 
 impl StoreHandle {
     /// Error is an errno value.
     pub async fn open_file(&mut self, path: &str) -> Result<(), u16> {
-        if let Some((owned_path, _)) = self.store.cached_files.lock().unwrap().remove_entry(path) {
+        if let Some((owned_path, state)) =
+            self.store.cached_files.lock().unwrap().remove_entry(path)
+        {
             trace!(path, "reviving cached entry");
             self.store
                 .opened_files
@@ -332,7 +418,7 @@ impl StoreHandle {
                 .entry(owned_path)
                 .or_insert(OpenedFileState {
                     refs: 0,
-                    download_status: FileDownloadStatus::Downloaded,
+                    download_status: FileDownloadStatus::Downloaded { etag: state.etag },
                 })
                 .refs += 1;
             return Ok(());
@@ -343,7 +429,7 @@ impl StoreHandle {
             if let Some(existing_state) = guard.get_mut(path) {
                 existing_state.refs += 1;
                 let rx_download = match &existing_state.download_status {
-                    FileDownloadStatus::Downloaded => None,
+                    FileDownloadStatus::Downloaded { .. } => None,
                     FileDownloadStatus::Downloading {
                         download_result_channel,
                     } => Some(download_result_channel.subscribe()),
@@ -364,25 +450,29 @@ impl StoreHandle {
         };
 
         let result = if let Some(ref mut rx) = rx_download {
-            rx.recv().await.unwrap() // TODO investigate
+            rx.recv().await.unwrap().map(|_| {}) // TODO investigate
         } else if let Some(ref tx) = tx_download {
             let result = self.store.download_file(path).await.map_err(|err| {
                 err.raw_os_error()
                     .unwrap_or(rustix::io::Errno::IO.raw_os_error()) as u16
             });
-            let _ = tx.send(result);
+            let _ = tx.send(match &result {
+                Ok(_) => Ok(()),
+                Err(err) => Err(*err),
+            });
             let mut guard = self.store.opened_files.lock().unwrap();
             match result {
-                Ok(_) => {
+                Ok(etag) => {
                     if let Some(state) = guard.get_mut(path) {
-                        state.download_status = FileDownloadStatus::Downloaded;
+                        state.download_status = FileDownloadStatus::Downloaded { etag };
                     }
+                    Ok(())
                 }
-                Err(_) => {
+                Err(err) => {
                     guard.remove(path);
+                    Err(err)
                 }
-            };
-            result
+            }
         } else {
             Ok(())
         };
