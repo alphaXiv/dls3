@@ -7,7 +7,7 @@ RUN bash download-zig.sh community-mirrors.txt
 
 FROM fedora:43
 RUN sed -i '/tsflags=nodocs/d' /etc/dnf/dnf.conf
-RUN dnf install -y cgdb lldb debuginfod man-db man-pages git gcc clang procps-ng btop clangd strace cargo rclone fuse3 vim rust-src rustfmt clippy netcat awscli2 pv moreutils xxd ripgrep
+RUN dnf install -y cgdb lldb debuginfod man-db man-pages git gcc clang procps-ng btop clangd strace cargo rclone fuse3 vim rust-src rustfmt clippy netcat awscli2 pv moreutils xxd ripgrep ltrace tree
 ENV DEBUGINFOD_URLS="https://debuginfod.fedoraproject.org/"
 COPY <<EOF /root/.gdbinit
 set debuginfod enabled on
