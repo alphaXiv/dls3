@@ -39,9 +39,27 @@ pub fn wrapOpen(
     const Ret = FunctionReturn(id);
     const Args = FunctionArgs(id);
 
+    const arg_types = blk: {
+        var types: [@typeInfo(Fn).@"fn".params.len]type = undefined;
+        for (&types, @typeInfo(Fn).@"fn".params) |*t, param| {
+            t.* = param.type.?;
+        }
+        break :blk types;
+    };
+
     const fallibleTupleWrapper = struct {
         fn wrapper(args: Args) !Ret {
-            std.log.debug("{s}({any})", .{ @tagName(id), args });
+            std.log.debug(comptime fmt: {
+                var fmt: []const u8 = "{s}(";
+                for (arg_types, 0..) |T, i| {
+                    fmt = fmt ++ if (@typeInfo(T) == .pointer and @typeInfo(T).pointer.child == c_char)
+                        "\"{s}\""
+                    else
+                        "{any}";
+                    if (i != arg_types.len - 1) fmt = fmt ++ ", ";
+                }
+                break :fmt fmt ++ ")";
+            }, .{@tagName(id)} ++ args);
             const state = try State.get(&hook.hardcoded_config);
             defer _ = state.arena.reset(.retain_capacity);
 
@@ -85,14 +103,6 @@ pub fn wrapOpen(
             }
         }
     }.wrapper;
-
-    const arg_types = blk: {
-        var types: [@typeInfo(Fn).@"fn".params.len]type = undefined;
-        for (&types, @typeInfo(Fn).@"fn".params) |*t, param| {
-            t.* = param.type.?;
-        }
-        break :blk types;
-    };
 
     return switch (arg_types.len) {
         1 => struct {
