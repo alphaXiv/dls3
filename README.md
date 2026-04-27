@@ -7,6 +7,10 @@ There are two components:
 - `hook` - the library that is linked into programs that should see the S3 bucket, written in Zig
 - `daemon` - the program that runs in the background communicating with S3. `hook` sends requests to `daemon` over a UNIX socket and the functions return when the data is available.
 
+## Security
+
+I have tried to prevent anything too insane from happening, but my defenses do not rise to the level of a real filesystem implementation. **Do not run the daemon at a higher privilege level than the programs you're intercepting**.
+
 ## Terminology
 
 - _victim_ is the program which has the library injected and will see the S3 bucket
@@ -59,3 +63,5 @@ More interesting issues:
 - [ ] Handle writing files
 - [ ] Strip prefix from paths
 - [ ] Easy wrapper
+- [ ] Work out how functions get intercepted before the initialization routine runs
+- [ ] Set file mtime based on S3 metadata
