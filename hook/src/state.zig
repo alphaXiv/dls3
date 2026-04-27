@@ -1,4 +1,5 @@
-//! Threadlocal state
+//! Mutable state for the hook: an arena, an IO instance, a connection to the daemon, and some buffers.
+//! Each thread has its own.
 
 const std = @import("std");
 const Io = std.Io;
