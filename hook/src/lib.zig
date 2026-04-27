@@ -11,6 +11,10 @@ pub const wrappers = @import("wrappers.zig");
 pub const fns = @import("fns.zig");
 pub const Functions = fns.Functions;
 
+// prevent zig from allocating a large threadlocal stack for signal handling
+// since we won't use it and it eats into the space allocated for the victim's threads' stacks
+pub const std_options: std.Options = .{ .signal_stack_size = null };
+
 comptime {
     if (@import("builtin").target.os.tag != .linux) @compileError("only linux is supported");
     switch (@import("builtin").target.cpu.arch) {
