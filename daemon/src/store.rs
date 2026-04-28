@@ -414,7 +414,9 @@ impl Store {
         // clean up keys
         created_files.retain(|_key, visited| *visited);
 
-        trace!("sync: created {created} files, deleted {deleted}");
+        if created > 0 || deleted > 0 {
+            trace!("sync: created {created} files, deleted {deleted}");
+        }
 
         Ok(())
     }
