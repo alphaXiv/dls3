@@ -102,6 +102,11 @@ pub enum InitError {
     Rustix { source: Errno, path: String },
 }
 
+enum DownloadIfChangedResult {
+    Downloaded { etag: Option<String> },
+    Unchanged,
+}
+
 impl Store {
     /// Initialize a backing store with sparse files from the contents of an S3 bucket
     pub async fn new(client: &Client, config: Config) -> Result<Arc<Store>, InitError> {
@@ -129,15 +134,29 @@ impl Store {
         store.sync_backing_store(&mut created_files).await?;
 
         let weak = Arc::downgrade(&store);
-        let interval = store.config.refetch_all_interval;
+        let refetch_all_interval = store.config.refetch_all_interval;
         tokio::spawn(async move {
             loop {
-                tokio::time::sleep(interval).await;
+                tokio::time::sleep(refetch_all_interval).await;
                 let Some(store) = weak.upgrade() else {
                     return;
                 };
                 if let Err(err) = store.sync_backing_store(&mut created_files).await {
                     error!(?err, "failed to refetch files");
+                }
+            }
+        });
+
+        let weak2 = Arc::downgrade(&store);
+        let refetch_open_interval = store.config.refetch_open_interval;
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(refetch_open_interval).await;
+                let Some(store) = weak2.upgrade() else {
+                    return;
+                };
+                if let Err(err) = store.refetch_open_files().await {
+                    error!(?err, "failed to refetch open files");
                 }
             }
         });
@@ -152,9 +171,19 @@ impl Store {
         }
     }
 
-    /// Returns ETag or an error
     async fn download_file(self: &Store, path: &str) -> Result<Option<String>, io::Error> {
-        // TODO: create enclosing directories if they are missing
+        match self.download_file_if_changed(path, None::<String>).await {
+            Ok(DownloadIfChangedResult::Downloaded { etag }) => Ok(etag),
+            Ok(DownloadIfChangedResult::Unchanged) => unreachable!(),
+            Err(err) => Err(err),
+        }
+    }
+
+    async fn download_file_if_changed(
+        self: &Store,
+        path: &str,
+        if_none_match: Option<impl Into<String>>,
+    ) -> Result<DownloadIfChangedResult, io::Error> {
         let fd = rustix::fs::openat2(
             self.root_fd.as_fd(),
             path,
@@ -163,96 +192,82 @@ impl Store {
             ResolveFlags::BENEATH,
         )?;
 
-        let stat = rustix::fs::fstat(&fd)?;
-        let len = if stat.st_size == 0 {
-            // maybe just created
-            let head = self
-                .client
-                .head_object()
-                .key(path)
-                .bucket(self.config.bucket.as_ref())
-                .send()
-                .await
-                .map_err(|err| {
-                    error!(?path, ?err, "failed to HEAD S3 object");
-                    io::Error::from_raw_os_error(Errno::raw_os_error(
-                        match err.into_service_error() {
-                            aws_sdk_s3::operation::head_object::HeadObjectError::NotFound(_) => {
-                                Errno::NOENT
-                            }
-                            whatever if whatever.code() == Some("AccessDenied") => Errno::ACCESS,
-                            _ => Errno::IO,
-                        },
-                    ))
-                })?;
-            head.content_length().unwrap_or(0)
-        } else {
-            stat.st_size
-        };
-
-        // reserve space for the full size
-        while let Err(err) = rustix::fs::fallocate(&fd, FallocateFlags::empty(), 0, len as u64) {
-            if err == Errno::NOSPC {
-                let maybe_evictable_entry = {
-                    let mut guard = self.cached_files.lock().unwrap();
-                    let maybe_entry = guard.iter().max_by_key(|(_key, cache_state)| *cache_state);
-                    if let Some((key, _cache_state)) = maybe_entry {
-                        // TODO: do something better
-                        let owned_key = key.to_string();
-                        Some(guard.remove_entry(&owned_key).unwrap())
-                    } else {
-                        None
-                    }
-                };
-                if let Some(evictable_entry) = maybe_evictable_entry {
-                    trace!(
-                        key = evictable_entry.0,
-                        size = evictable_entry.1.size,
-                        "evicting"
-                    );
-                    let evict_fd = rustix::fs::openat2(
-                        self.root_fd.as_fd(),
-                        evictable_entry.0,
-                        OFlags::WRONLY,
-                        Mode::empty(),
-                        ResolveFlags::BENEATH,
-                    )?;
-                    // clear space
-                    rustix::fs::fallocate(
-                        evict_fd,
-                        FallocateFlags::PUNCH_HOLE | FallocateFlags::KEEP_SIZE,
-                        0,
-                        evictable_entry.1.size,
-                    )?;
-                    // retry
-                } else {
-                    return Err(io::Error::from(err));
-                }
-            } else {
-                return Err(io::Error::from(err));
-            }
-        }
-
-        let result = self
+        let has_if_none_match = if_none_match.is_some();
+        let mut builder = self
             .client
             .get_object()
             .key(path)
-            .bucket(self.config.bucket.as_ref())
-            .send()
-            .await
-            .map_err(|err| {
+            .bucket(self.config.bucket.as_ref());
+        if let Some(etag) = if_none_match {
+            builder = builder.if_none_match(etag);
+        }
+        let result = match builder.send().await {
+            Err(err)
+                if err
+                    .raw_response()
+                    .is_some_and(|r| r.status().as_u16() == 304)
+                    && has_if_none_match =>
+            {
+                return Ok(DownloadIfChangedResult::Unchanged);
+            }
+            something_else => something_else.map_err(|err| {
                 error!(?path, ?err, "failed to download S3 object");
                 io::Error::from_raw_os_error(Errno::raw_os_error(match err.into_service_error() {
                     aws_sdk_s3::operation::get_object::GetObjectError::NoSuchKey(_) => Errno::NOENT,
                     whatever if whatever.code() == Some("AccessDenied") => Errno::ACCESS,
                     _ => Errno::IO,
                 }))
-            })?;
+            })?,
+        };
+        let len = result.content_length().unwrap_or(0);
+
+        // reserve space for the full size
+        while len > 0
+            && let Err(Errno::NOSPC) =
+                rustix::fs::fallocate(&fd, FallocateFlags::empty(), 0, len as u64)
+        {
+            let maybe_evictable_entry = {
+                let mut guard = self.cached_files.lock().unwrap();
+                let maybe_entry = guard.iter().max_by_key(|(_key, cache_state)| *cache_state);
+                if let Some((key, _cache_state)) = maybe_entry {
+                    // TODO: do something better (avoid allocation)
+                    let owned_key = key.to_string();
+                    Some(guard.remove_entry(&owned_key).unwrap())
+                } else {
+                    None
+                }
+            };
+            if let Some(evictable_entry) = maybe_evictable_entry {
+                trace!(
+                    key = evictable_entry.0,
+                    size = evictable_entry.1.size,
+                    "evicting"
+                );
+                let evict_fd = rustix::fs::openat2(
+                    self.root_fd.as_fd(),
+                    evictable_entry.0,
+                    OFlags::WRONLY,
+                    Mode::empty(),
+                    ResolveFlags::BENEATH,
+                )?;
+                // clear space
+                rustix::fs::fallocate(
+                    evict_fd,
+                    FallocateFlags::PUNCH_HOLE | FallocateFlags::KEEP_SIZE,
+                    0,
+                    evictable_entry.1.size,
+                )?;
+                // retry
+            } else {
+                return Err(io::Error::from(Errno::NOSPC));
+            }
+        }
+
         let _ = tokio::io::copy(&mut result.body.into_async_read(), &mut unsafe {
             tokio::fs::File::from_raw_fd(fd.into_raw_fd())
         })
         .await?;
-        Ok(result.e_tag)
+        Ok(DownloadIfChangedResult::Downloaded { etag: result.e_tag })
     }
 
     fn release_file<'a>(
@@ -296,6 +311,7 @@ impl Store {
             if stat.st_size == 0 {
                 return;
             }
+            // TODO: don't cache if etag was missing
             trace!(path, "releasing file to cache");
             let mut guard = self.cached_files.lock().unwrap();
             guard.insert(
@@ -399,6 +415,94 @@ impl Store {
         created_files.retain(|_key, visited| *visited);
 
         trace!("sync: created {created} files, deleted {deleted}");
+
+        Ok(())
+    }
+
+    /// Check for changes against files that we have downloaded the contents of
+    /// - For files opened by a victim, the new version is written on top of the current path
+    /// - For cached files, we truncate them to free up the space (the next open will download the new version)
+    async fn refetch_open_files(&self) -> Result<(), io::Error> {
+        let keys_and_etags: Vec<(String, String)> = self
+            .opened_files
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|(k, v)| {
+                if let FileDownloadStatus::Downloaded { etag: Some(ref e) } = v.download_status {
+                    Some((k.clone(), e.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        for (key, etag) in keys_and_etags {
+            if let DownloadIfChangedResult::Downloaded { etag } =
+                self.download_file_if_changed(&key, Some(etag)).await?
+                && let Some(open_state) = self.opened_files.lock().unwrap().get_mut(&key)
+                && let FileDownloadStatus::Downloaded {
+                    etag: ref mut stored_etag,
+                } = open_state.download_status
+            {
+                trace!(key, "downloaded new version of object");
+                *stored_etag = etag;
+            }
+        }
+
+        let cached_keys_and_etags: Vec<(String, String)> = self
+            .cached_files
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|(k, v)| v.etag.as_ref().map(|e| (k.clone(), e.clone())))
+            .collect();
+
+        for (key, etag) in cached_keys_and_etags {
+            match self
+                .client
+                .head_object()
+                .bucket(self.config.bucket.as_ref())
+                .key(&key)
+                .if_none_match(&etag)
+                .send()
+                .await
+            {
+                Ok(result) => {
+                    // free disk space and truncate to the new length
+                    // TODO: don't clobber if someone has opened the file since we checked cached_files
+                    let evict_fd = rustix::fs::openat2(
+                        self.root_fd.as_fd(),
+                        &key,
+                        OFlags::WRONLY,
+                        Mode::empty(),
+                        ResolveFlags::BENEATH,
+                    )?;
+                    // clear space
+                    rustix::fs::fallocate(
+                        &evict_fd,
+                        FallocateFlags::PUNCH_HOLE | FallocateFlags::KEEP_SIZE,
+                        0,
+                        result.content_length().unwrap_or(0) as u64,
+                    )?;
+                    rustix::fs::ftruncate(evict_fd, result.content_length().unwrap_or(0) as u64)?;
+                    trace!(key, "cleared stale cached version of object");
+                    self.cached_files.lock().unwrap().remove(&key);
+                }
+                Err(err)
+                    if err
+                        .raw_response()
+                        .is_some_and(|r| r.status().as_u16() == 304) =>
+                {
+                    // unchanged
+                }
+                Err(err) => {
+                    error!(?err, "failed to check if cached object {key} has changed");
+                    // delete entry and file, sync_backing_store will try to handle it next
+                    self.cached_files.lock().unwrap().remove(&key);
+                    rustix::fs::unlinkat(self.root_fd.as_fd(), &key, AtFlags::empty())?;
+                }
+            }
+        }
 
         Ok(())
     }

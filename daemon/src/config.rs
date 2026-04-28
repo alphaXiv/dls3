@@ -14,7 +14,6 @@ pub struct Config {
     /// How frequently to scan the entire bucket for new/deleted files.
     pub refetch_all_interval: Duration,
     /// How frequently to check for updated versions of opened files.
-    #[expect(dead_code)]
     pub refetch_open_interval: Duration,
 }
 
