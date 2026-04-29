@@ -109,29 +109,31 @@ enum DownloadIfChangedResult {
 
 impl Store {
     /// Initialize a backing store with sparse files from the contents of an S3 bucket
-    pub async fn new(client: &Client, config: Config) -> Result<Arc<Store>, InitError> {
-        tokio::fs::create_dir_all(config.backing_path.as_ref())
+    pub async fn new(
+        client: &Client,
+        config: Config,
+        backing_path: PathBuf,
+    ) -> Result<Arc<Store>, InitError> {
+        tokio::fs::create_dir_all(&backing_path)
             .await
             .with_context(|_| IoSnafu {
-                path: config.backing_path.clone(),
+                path: backing_path.to_string_lossy(),
             })?;
 
         let store = Arc::new(Store {
             client: client.clone(),
-            root_fd: rustix::fs::open(
-                config.backing_path.as_ref(),
-                OFlags::DIRECTORY,
-                Mode::empty(),
-            )
-            .with_context(|_| RustixSnafu {
-                path: config.backing_path.clone(),
-            })?,
+            root_fd: rustix::fs::open(&backing_path, OFlags::DIRECTORY, Mode::empty())
+                .with_context(|_| RustixSnafu {
+                    path: backing_path.to_string_lossy(),
+                })?,
             opened_files: Mutex::new(HashMap::new()),
             cached_files: Mutex::new(HashMap::new()),
             config,
         });
         let mut created_files: HashMap<String, bool> = HashMap::new();
-        store.sync_backing_store(&mut created_files).await?;
+        store
+            .sync_backing_store(&mut created_files, &backing_path)
+            .await?;
 
         let weak = Arc::downgrade(&store);
         let refetch_all_interval = store.config.refetch_all_interval;
@@ -141,7 +143,10 @@ impl Store {
                 let Some(store) = weak.upgrade() else {
                     return;
                 };
-                if let Err(err) = store.sync_backing_store(&mut created_files).await {
+                if let Err(err) = store
+                    .sync_backing_store(&mut created_files, &backing_path)
+                    .await
+                {
                     error!(?err, "failed to refetch files");
                 }
             }
@@ -197,7 +202,7 @@ impl Store {
             .client
             .get_object()
             .key(path)
-            .bucket(self.config.bucket.as_ref());
+            .bucket(&self.config.bucket);
         if let Some(etag) = if_none_match {
             builder = builder.if_none_match(etag);
         }
@@ -331,15 +336,16 @@ impl Store {
     async fn sync_backing_store(
         self: &Store,
         created_files: &mut HashMap<String, bool>,
+        backing_path: &Path,
     ) -> Result<(), InitError> {
         let mut pages = self
             .client
             .list_objects_v2()
-            .bucket(self.config.bucket.as_ref())
-            .prefix(self.config.prefix.as_ref())
+            .bucket(&self.config.bucket)
+            .prefix(&self.config.prefix)
             .into_paginator()
             .send();
-        let mut path = PathBuf::from(self.config.backing_path.as_ref());
+        let mut path = PathBuf::from(backing_path);
         for visited in created_files.values_mut() {
             *visited = false;
         }
@@ -349,12 +355,11 @@ impl Store {
 
         while let Some(page_result) = pages.next().await {
             let page = page_result.map_err(Box::new).context(S3Snafu {
-                bucket: self.config.bucket.as_ref(),
+                bucket: &self.config.bucket,
             })?;
             for object in page.contents() {
                 if let Some(key) = object.key() {
-                    // if it's in cached_files or opened_files, skip
-                    // (will be handled by refetching *open* files)
+                    // if it's in cached_files or opened_files, skip (will be handled by refetching *open* files)
                     // but mark the file as visited
                     if self.cached_files.lock().unwrap().contains_key(key)
                         || self.opened_files.lock().unwrap().contains_key(key)
@@ -394,7 +399,8 @@ impl Store {
                         }
                     }
                 }
-                path.push(self.config.backing_path.as_ref());
+                path.clear();
+                path.push(backing_path);
             }
         }
 
@@ -463,7 +469,7 @@ impl Store {
             match self
                 .client
                 .head_object()
-                .bucket(self.config.bucket.as_ref())
+                .bucket(&self.config.bucket)
                 .key(&key)
                 .if_none_match(&etag)
                 .send()

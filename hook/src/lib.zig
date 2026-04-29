@@ -2,15 +2,14 @@ const std = @import("std");
 
 // re-exports
 pub const protocol = @import("protocol.zig");
-pub const Config = @import("config.zig").Config;
-pub const hardcoded_config = @import("config.zig").hardcoded_config;
 pub const path = @import("path.zig");
 pub const State = @import("state.zig");
 pub const c = @import("c.zig");
 pub const wrappers = @import("wrappers.zig");
 pub const fns = @import("fns.zig");
 pub const Functions = fns.Functions;
-pub const global = @import("global.zig");
+pub const Global = @import("global.zig");
+pub const Config = Global.Config;
 pub const log = std.log.scoped(.dls3);
 
 // prevent zig from allocating a large threadlocal stack for signal handling
@@ -26,15 +25,15 @@ comptime {
 }
 
 fn tryInit() !void {
-    global.init();
-    const io = global.io().?;
-    const file: std.Io.File = .{ .handle = hardcoded_config.backing_fd, .flags = .{ .nonblocking = false } };
+    try Global.init();
+    const global = Global.get().?;
+    const file: std.Io.File = .{ .handle = global.config.backing_fd, .flags = .{ .nonblocking = false } };
     var buf: [std.posix.PATH_MAX]u8 = undefined;
 
-    if (file.realPath(io, &buf)) |len| {
+    if (file.realPath(global.threaded_io.io(), &buf)) |len| {
         const real_path = buf[0..len];
-        if (!std.mem.eql(u8, real_path, hardcoded_config.backing_path)) {
-            log.err("fd {} is open as {s} instead of {s}, dls3 cannot operate", .{ hardcoded_config.backing_fd, real_path, hardcoded_config.backing_path });
+        if (!std.mem.eql(u8, real_path, global.config.backing_path)) {
+            log.err("fd {} is open as {s} instead of {s}, dls3 cannot operate", .{ global.config.backing_fd, real_path, global.config.backing_path });
             return error.FixedFdFailed;
         } else {
             log.debug("fd is already open", .{});
@@ -42,17 +41,17 @@ fn tryInit() !void {
     } else |err| switch (err) {
         error.FileNotFound => {
             // we need to open it ourselves
-            const fd = try std.posix.openat(std.posix.AT.FDCWD, hardcoded_config.backing_path, .{
+            const fd = try std.posix.openat(std.posix.AT.FDCWD, global.config.backing_path, .{
                 .ACCMODE = .RDONLY,
                 .DIRECTORY = true,
                 .CLOEXEC = true,
             }, 0);
             defer _ = std.os.linux.close(fd);
-            const new_fd = std.os.linux.fcntl(fd, std.os.linux.F.DUPFD_CLOEXEC, @intCast(hardcoded_config.backing_fd));
+            const new_fd = std.os.linux.fcntl(fd, std.os.linux.F.DUPFD_CLOEXEC, @intCast(global.config.backing_fd));
             switch (std.os.linux.errno(new_fd)) {
-                .SUCCESS => if (new_fd != hardcoded_config.backing_fd) {
+                .SUCCESS => if (new_fd != global.config.backing_fd) {
                     _ = std.os.linux.close(@intCast(new_fd));
-                    log.err("fcntl got fd {} instead of {}", .{ new_fd, hardcoded_config.backing_fd });
+                    log.err("fcntl got fd {} instead of {}", .{ new_fd, global.config.backing_fd });
                     return error.FixedFdFailed;
                 } else {
                     log.debug("fd opened", .{});

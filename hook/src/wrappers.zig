@@ -84,9 +84,9 @@ pub fn wrapOpen(
         fn wrapper(args: Args) !Ret {
             logArgs(id, args);
 
-            const realFn = @field(hook.global.functions(), @tagName(id));
-            const io = hook.global.io() orelse return @call(.auto, realFn, args);
-            const state = State.get(&hook.hardcoded_config, io) catch return @call(.auto, realFn, args);
+            const realFn = @field(hook.fns.get(), @tagName(id));
+            const global = hook.Global.get() orelse return @call(.auto, realFn, args);
+            const state = State.get(&global.config, global.threaded_io.io()) catch return @call(.auto, realFn, args);
             defer _ = state.arena.reset(.retain_capacity);
 
             const result = adapter(realFn, args);
@@ -169,9 +169,9 @@ pub fn wrapClose(
         fn wrapper(args: Args) !Ret {
             logArgs(id, args);
 
-            const realFn = @field(hook.global.functions(), @tagName(id));
-            const io = hook.global.io() orelse return @call(.auto, realFn, args);
-            const state = State.get(&hook.hardcoded_config, io) catch return @call(.auto, realFn, args);
+            const realFn = @field(hook.fns.get(), @tagName(id));
+            const global = hook.Global.get() orelse return @call(.auto, realFn, args);
+            const state = State.get(&global.config, global.threaded_io.io()) catch return @call(.auto, realFn, args);
             defer _ = state.arena.reset(.retain_capacity);
 
             const fd = adapter(args);

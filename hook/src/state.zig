@@ -43,7 +43,7 @@ pub fn get(config: *const hook.Config, io: Io) !*State {
             }
 
             state = .{
-                .arena = .init(hook.global.gpa),
+                .arena = .init(hook.Global.gpa),
                 .stream = stream,
                 .stream_reader = undefined,
                 .stream_writer = undefined,

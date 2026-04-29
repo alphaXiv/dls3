@@ -59,3 +59,20 @@ export const fopen = @import("fns/stdio.zig").fopen;
 export const fopen64 = fopen;
 
 export const close = @import("fns/unistd.zig").close;
+
+var cache: ?Functions = null;
+
+/// Initializes a cache of real function implementations using `dlsym()` if this has not been called yet.
+/// This check is not threadsafe since this must be called for the first time during dynamic library initialization.
+pub fn get() *const Functions {
+    if (cache == null) {
+        var wip_functions: hook.Functions = undefined;
+        inline for (@typeInfo(hook.Functions).@"struct".fields) |field| {
+            @field(wip_functions, field.name) = @ptrCast(@alignCast(
+                hook.c.dlsym(hook.c.RTLD_NEXT, field.name) orelse std.debug.panic("could not get libc implementation of {s}", .{field.name}),
+            ));
+        }
+        cache = wip_functions;
+    }
+    return &(cache.?);
+}

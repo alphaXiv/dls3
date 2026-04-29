@@ -25,7 +25,7 @@ pub const fopen = hook.wrappers.wrapOpen(
     }.adapter,
     struct {
         fn close(stream: ?*c.FILE) void {
-            _ = hook.global.functions().fclose(stream);
+            _ = hook.fns.get().fclose(stream);
         }
     }.close,
     null,

@@ -5,8 +5,17 @@
 const std = @import("std");
 const hook = @import("hook");
 
-var threaded_io: ?std.Io.Threaded = null;
-var function_cache: ?hook.Functions = null;
+threaded_io: std.Io.Threaded,
+config: Config,
+
+const Global = @This();
+pub const Config = struct {
+    socket_path: []const u8,
+    backing_path: []const u8,
+    backing_fd: i32,
+};
+
+var instance: ?Global = null;
 
 var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
 pub const gpa = switch (@import("builtin").mode) {
@@ -14,31 +23,37 @@ pub const gpa = switch (@import("builtin").mode) {
     else => std.heap.smp_allocator,
 };
 
-/// Must be called before any additional threads are spawned
-pub fn init() void {
-    threaded_io = .init(gpa, .{
-        .async_limit = .nothing,
-        .concurrent_limit = .nothing,
-    });
-    _ = functions();
+/// Must be called once before any additional threads are spawned
+pub fn init() !void {
+    const new_state: Global = .{
+        .threaded_io = .init(gpa, .{
+            .async_limit = .nothing,
+            .concurrent_limit = .nothing,
+        }),
+        .config = .{
+            .socket_path = std.mem.span(hook.c.getenv("DLS3_SOCKET_PATH") orelse {
+                hook.log.err("missing DLS3_SOCKET_PATH", .{});
+                return error.EnvVarMissing;
+            }),
+            .backing_path = std.mem.span(hook.c.getenv("DLS3_BACKING_PATH") orelse {
+                hook.log.err("missing DLS3_BACKING_PATH", .{});
+                return error.EnvVarMissing;
+            }),
+            .backing_fd = std.fmt.parseInt(i32, std.mem.span(hook.c.getenv("DLS3_BACKING_FD") orelse {
+                hook.log.err("missing DLS3_BACKING_FD", .{});
+                return error.EnvVarMissing;
+            }), 10) catch |err| {
+                hook.log.err("invalid DLS3_BACKING_FD", .{});
+                return err;
+            },
+        },
+    };
+    instance = new_state;
 }
 
-pub fn io() ?std.Io {
-    return if (threaded_io) |*io_impl|
-        io_impl.io()
+pub fn get() ?*Global {
+    return if (instance) |*global|
+        global
     else
         null;
-}
-
-pub fn functions() *const hook.Functions {
-    if (function_cache == null) {
-        var wip_functions: hook.Functions = undefined;
-        inline for (@typeInfo(hook.Functions).@"struct".fields) |field| {
-            @field(wip_functions, field.name) = @ptrCast(@alignCast(
-                hook.c.dlsym(hook.c.RTLD_NEXT, field.name) orelse std.debug.panic("could not get libc implementation of {s}", .{field.name}),
-            ));
-        }
-        function_cache = wip_functions;
-    }
-    return &(function_cache.?);
 }
