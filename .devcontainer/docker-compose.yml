@@ -3,7 +3,7 @@ services:
         build:
             dockerfile: "dev.Containerfile"
         volumes:
-            - "..:/workspaces/dls3"
+            - "..:/workspaces/dls3:rw,z"
         cap_add:
             - "SYS_ADMIN" # so i can mount stuff
 
@@ -11,7 +11,7 @@ services:
         image: "dxflrs/garage:v2.3.0"
         volumes:
             - "garage_data:/mnt/garage"
-            - "./garage.toml:/etc/garage.toml:ro"
+            - "./garage.toml:/etc/garage.toml:ro,z"
         environment:
             - "GARAGE_DEFAULT_ACCESS_KEY=GK_ACCESS"
             - "GARAGE_DEFAULT_SECRET_KEY=GK_SECRETSECRETSECRET"
