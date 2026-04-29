@@ -21,6 +21,39 @@ pub fn OpenAdapterReturn(comptime T: type) type {
     };
 }
 
+fn logArgs(id: FunctionId, args: anytype) void {
+    const AdaptedArgs = comptime T: {
+        var field_types: [args.len]type = undefined;
+        for (&field_types, @typeInfo(@TypeOf(args)).@"struct".fields) |*out_type, field_info| {
+            out_type.* = if (field_info.type == [*:0]const c_char)
+                [*:0]const u8
+            else
+                field_info.type;
+        }
+        break :T @Tuple(&field_types);
+    };
+
+    var adapted_args: AdaptedArgs = undefined;
+    inline for (&adapted_args, args) |*adapted, original| {
+        adapted.* = if (@TypeOf(original) == [*:0]const c_char)
+            @ptrCast(original)
+        else
+            original;
+    }
+
+    hook.log.debug(comptime fmt: {
+        var fmt: []const u8 = "{s}(";
+        for (@typeInfo(@TypeOf(args)).@"struct".fields, 0..) |f, i| {
+            fmt = fmt ++ if (@typeInfo(f.type) == .pointer and @typeInfo(f.type).pointer.child == c_char)
+                "\"{s}\""
+            else
+                "{any}";
+            if (i != args.len - 1) fmt = fmt ++ ", ";
+        }
+        break :fmt fmt ++ ")";
+    }, .{@tagName(id)} ++ adapted_args);
+}
+
 /// Generate a wrapper for a function that opens a file
 pub fn wrapOpen(
     /// Which function to wrap (used to look up the real implementation and type information)
@@ -49,17 +82,7 @@ pub fn wrapOpen(
 
     const fallibleTupleWrapper = struct {
         fn wrapper(args: Args) !Ret {
-            hook.log.debug(comptime fmt: {
-                var fmt: []const u8 = "{s}(";
-                for (arg_types, 0..) |T, i| {
-                    fmt = fmt ++ if (@typeInfo(T) == .pointer and @typeInfo(T).pointer.child == c_char)
-                        "\"{s}\""
-                    else
-                        "{any}";
-                    if (i != arg_types.len - 1) fmt = fmt ++ ", ";
-                }
-                break :fmt fmt ++ ")";
-            }, .{@tagName(id)} ++ args);
+            logArgs(id, args);
 
             const realFn = @field(hook.global.functions(), @tagName(id));
             const io = hook.global.io() orelse return @call(.auto, realFn, args);
@@ -144,6 +167,8 @@ pub fn wrapClose(
 
     const fallibleTupleWrapper = struct {
         fn wrapper(args: Args) !Ret {
+            logArgs(id, args);
+
             const realFn = @field(hook.global.functions(), @tagName(id));
             const io = hook.global.io() orelse return @call(.auto, realFn, args);
             const state = State.get(&hook.hardcoded_config, io) catch return @call(.auto, realFn, args);

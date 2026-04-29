@@ -4,6 +4,7 @@
 const std = @import("std");
 const Io = std.Io;
 const hook = @import("hook");
+const linux = std.os.linux;
 
 arena: std.heap.ArenaAllocator,
 stream: Io.net.Stream,
@@ -21,7 +22,7 @@ threadlocal var state: ?anyerror!State = null;
 
 pub fn get(config: *const hook.Config, io: Io) !*State {
     if (state == null) {
-        hook.log.debug("init state on thread {}", .{std.os.linux.gettid()});
+        hook.log.debug("init state on thread {}", .{linux.gettid()});
         {
             const addr = Io.net.UnixAddress.init(config.socket_path) catch |err| {
                 hook.log.err("failed to create unix address from {s}: {s}", .{ config.socket_path, @errorName(err) });
@@ -33,6 +34,13 @@ pub fn get(config: *const hook.Config, io: Io) !*State {
                 state = err;
                 return err;
             };
+            switch (linux.errno(linux.fcntl(stream.socket.handle, linux.F.SETFD, linux.FD_CLOEXEC))) {
+                .SUCCESS => {},
+                else => |err| {
+                    hook.log.err("failed to set CLOEXEC on socket: {s}", .{@tagName(err)});
+                    return error.Errno;
+                },
+            }
 
             state = .{
                 .arena = .init(hook.global.gpa),
