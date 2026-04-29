@@ -58,10 +58,12 @@ More interesting issues:
 
 - [x] Demo
 - [x] Daemon knows when files are closed and can reclaim their space
-- [ ] Preiodically check S3 for new/changed files
-- [ ] Hook into more functions
+- [x] Preiodically check S3 for new/changed files
+- [x] Hook into more functions
 - [ ] Handle writing files
 - [ ] Strip prefix from paths
 - [ ] Easy wrapper
-- [ ] Work out how functions get intercepted before the initialization routine runs
+- [x] Work out how functions get intercepted before the initialization routine runs
+  - because someone else can call functions we override during a dynamic initializer
 - [ ] Set file mtime based on S3 metadata
+- [ ] Deleting files in S3 is busted

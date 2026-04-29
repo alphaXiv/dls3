@@ -31,7 +31,7 @@ pub fn wrapOpen(
     comptime adapter: fn (FunctionPtr(id), FunctionArgs(id)) OpenAdapterReturn(FunctionReturn(id)),
     /// Function to close the opened file in case opening succeeds but then communicating with the
     /// daemon fails
-    comptime close: fn (*State, FunctionReturn(id)) void,
+    comptime close: fn (FunctionReturn(id)) void,
     /// Value to return when an error occurs
     comptime error_value: FunctionReturn(id),
 ) @typeInfo(FunctionPtr(id)).pointer.child {
@@ -49,7 +49,7 @@ pub fn wrapOpen(
 
     const fallibleTupleWrapper = struct {
         fn wrapper(args: Args) !Ret {
-            std.log.debug(comptime fmt: {
+            hook.log.debug(comptime fmt: {
                 var fmt: []const u8 = "{s}(";
                 for (arg_types, 0..) |T, i| {
                     fmt = fmt ++ if (@typeInfo(T) == .pointer and @typeInfo(T).pointer.child == c_char)
@@ -60,24 +60,26 @@ pub fn wrapOpen(
                 }
                 break :fmt fmt ++ ")";
             }, .{@tagName(id)} ++ args);
-            const state = try State.get(&hook.hardcoded_config);
+
+            const realFn = @field(hook.global.functions(), @tagName(id));
+            const io = hook.global.io() orelse return @call(.auto, realFn, args);
+            const state = State.get(&hook.hardcoded_config, io) catch return @call(.auto, realFn, args);
             defer _ = state.arena.reset(.retain_capacity);
 
-            const realFn = @field(state.functions, @tagName(id));
             const result = adapter(realFn, args);
             const fd = result.fd orelse return result.value;
 
             var set_specific_errno = false;
             errdefer {
-                close(state, result.value);
+                close(result.value);
                 if (!set_specific_errno) c.__errno_location().* = @intFromEnum(std.os.linux.E.IO);
             }
 
             // now we know it succeeded, so try opening it with the daemon
-            const key = (hook.path.resolveOpenedFdToKey(state.io(), state.allocator(), state.config, fd) catch |err| {
+            const key = (hook.path.resolveOpenedFdToKey(state.allocator(), state.config, fd) catch |err| {
                 // i assume that realpath failing is more likely because you're operating on some weird
                 // file that is *not* under the mountpoint. so we pass through the opened file.
-                std.log.err("realpath failed: {s}", .{@errorName(err)});
+                hook.log.err("realpath failed: {s}", .{@errorName(err)});
                 return result.value;
             }) orelse return result.value;
 
@@ -142,18 +144,19 @@ pub fn wrapClose(
 
     const fallibleTupleWrapper = struct {
         fn wrapper(args: Args) !Ret {
-            const state = try State.get(&hook.hardcoded_config);
+            const realFn = @field(hook.global.functions(), @tagName(id));
+            const io = hook.global.io() orelse return @call(.auto, realFn, args);
+            const state = State.get(&hook.hardcoded_config, io) catch return @call(.auto, realFn, args);
             defer _ = state.arena.reset(.retain_capacity);
 
-            const realFn = @field(state.functions, @tagName(id));
             const fd = adapter(args);
 
-            const key = (hook.path.resolveOpenedFdToKey(state.io(), state.allocator(), state.config, fd) catch |err| {
-                std.log.err("realpath failed: {s}", .{@errorName(err)});
+            const key = (hook.path.resolveOpenedFdToKey(state.allocator(), state.config, fd) catch |err| {
+                hook.log.err("realpath failed: {s}", .{@errorName(err)});
                 return @call(.auto, realFn, args);
             }) orelse return @call(.auto, realFn, args);
             hook.protocol.writeMessage(state.writer(), &.{ .close = .{ .path = key } }) catch |err| {
-                std.log.err("send message failed: {s}", .{@errorName(err)});
+                hook.log.err("send message failed: {s}", .{@errorName(err)});
             };
             return @call(.auto, realFn, args);
         }

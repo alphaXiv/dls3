@@ -4,7 +4,7 @@ const State = hook.State;
 const linux = std.os.linux;
 const fns = hook.fns;
 
-fn closeFileDescriptor(_: *State, fd: c_int) void {
+fn closeFileDescriptor(fd: c_int) void {
     _ = linux.close(fd);
 }
 
