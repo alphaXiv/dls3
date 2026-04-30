@@ -31,18 +31,18 @@ pub fn init() !void {
             .concurrent_limit = .nothing,
         }),
         .config = .{
-            .socket_path = std.mem.span(hook.c.getenv("DLS3_SOCKET_PATH") orelse {
+            .socket_path = @ptrCast(std.mem.span(hook.c.getenv(@ptrCast("DLS3_SOCKET_PATH")) orelse {
                 hook.log.err("missing DLS3_SOCKET_PATH", .{});
                 return error.EnvVarMissing;
-            }),
-            .backing_path = std.mem.span(hook.c.getenv("DLS3_BACKING_PATH") orelse {
+            })),
+            .backing_path = @ptrCast(std.mem.span(hook.c.getenv(@ptrCast("DLS3_BACKING_PATH")) orelse {
                 hook.log.err("missing DLS3_BACKING_PATH", .{});
                 return error.EnvVarMissing;
-            }),
-            .backing_fd = std.fmt.parseInt(i32, std.mem.span(hook.c.getenv("DLS3_BACKING_FD") orelse {
+            })),
+            .backing_fd = std.fmt.parseInt(i32, @ptrCast(std.mem.span(hook.c.getenv(@ptrCast("DLS3_BACKING_FD")) orelse {
                 hook.log.err("missing DLS3_BACKING_FD", .{});
                 return error.EnvVarMissing;
-            }), 10) catch |err| {
+            })), 10) catch |err| {
                 hook.log.err("invalid DLS3_BACKING_FD", .{});
                 return err;
             },
