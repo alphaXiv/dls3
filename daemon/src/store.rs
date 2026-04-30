@@ -25,11 +25,14 @@ use aws_sdk_s3::{
     operation::list_objects_v2::ListObjectsV2Error,
 };
 
-use crate::config::Config;
+use crate::{
+    config::{AwsAuth, Config},
+    s3::create_client,
+};
 
 #[derive(Debug)]
 pub struct Store {
-    client: Client,
+    client: Mutex<Client>,
     config: Config,
     root_fd: rustix::fd::OwnedFd,
     /// TODO: merge these hashmaps, maybe use the hashheap crate
@@ -121,7 +124,7 @@ impl Store {
             })?;
 
         let store = Arc::new(Store {
-            client: client.clone(),
+            client: Mutex::new(client.clone()),
             root_fd: rustix::fs::open(&backing_path, OFlags::DIRECTORY, Mode::empty())
                 .with_context(|_| RustixSnafu {
                     path: backing_path.to_string_lossy(),
@@ -198,14 +201,15 @@ impl Store {
         )?;
 
         let has_if_none_match = if_none_match.is_some();
-        let mut builder = self
-            .client
-            .get_object()
-            .key(path)
-            .bucket(&self.config.bucket);
-        if let Some(etag) = if_none_match {
-            builder = builder.if_none_match(etag);
-        }
+        let builder = {
+            let client = self.client.lock().unwrap();
+            let builder = client.get_object().key(path).bucket(&self.config.bucket);
+            if let Some(etag) = if_none_match {
+                builder.if_none_match(etag)
+            } else {
+                builder
+            }
+        };
         let result = match builder.send().await {
             Err(err)
                 if err
@@ -340,6 +344,8 @@ impl Store {
     ) -> Result<(), InitError> {
         let mut pages = self
             .client
+            .lock()
+            .unwrap()
             .list_objects_v2()
             .bucket(&self.config.bucket)
             .prefix(&self.config.prefix)
@@ -466,15 +472,15 @@ impl Store {
             .collect();
 
         for (key, etag) in cached_keys_and_etags {
-            match self
-                .client
-                .head_object()
-                .bucket(&self.config.bucket)
-                .key(&key)
-                .if_none_match(&etag)
-                .send()
-                .await
-            {
+            let request = {
+                let client = self.client.lock().unwrap();
+                client
+                    .head_object()
+                    .bucket(&self.config.bucket)
+                    .key(&key)
+                    .if_none_match(&etag)
+            };
+            match request.send().await {
                 Ok(result) => {
                     // free disk space and truncate to the new length
                     // TODO: don't clobber if someone has opened the file since we checked cached_files
@@ -610,6 +616,15 @@ impl StoreHandle {
     pub fn close_file(&mut self, path: &str) {
         self.store.release_file(path, None);
         self.opened_files.remove(path);
+    }
+
+    pub fn replace_auth(&mut self, new_auth: AwsAuth) {
+        let new_config = Config {
+            auth: new_auth,
+            ..self.store.config.clone()
+        };
+        let mut guard = self.store.client.lock().unwrap();
+        *guard = create_client(&new_config);
     }
 }
 

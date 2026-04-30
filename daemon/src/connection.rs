@@ -29,6 +29,7 @@ pub async fn handle_client(mut stream: UnixStream, store: Arc<Store>) -> Result<
                 .whatever_context("could not send message")?;
             }
             ClientMessage::Close { path } => handle.close_file(&path),
+            ClientMessage::UpdateAuth(new_auth) => handle.replace_auth(new_auth),
         }
     }
     Ok(())

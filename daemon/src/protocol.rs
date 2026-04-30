@@ -1,5 +1,6 @@
 use std::{
     io::{self, ErrorKind},
+    str::Utf8Error,
     string::FromUtf8Error,
 };
 
@@ -7,10 +8,13 @@ use snafu::{ResultExt, prelude::Snafu};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tracing::trace;
 
+use crate::config::AwsAuth;
+
 #[derive(Debug)]
 pub enum ClientMessage {
     Open { path: String },
     Close { path: String },
+    UpdateAuth(AwsAuth),
 }
 
 #[derive(Debug)]
@@ -30,6 +34,27 @@ pub enum ReadMessageError {
     InvalidString {
         source: FromUtf8Error,
     },
+    InvalidStr {
+        source: Utf8Error,
+    },
+    TooShort,
+    TooLong,
+}
+
+/// Split a buffer which starts with a string prefixed by a 16-bit LE length into the string
+/// and the remainder. Returns None if the buffer is less than 2 bytes long or if the length
+/// indicated by the first 2 bytes exceeds the buffer.
+fn split_length_prefixed_string(buf: &[u8]) -> Result<(&[u8], &[u8]), ReadMessageError> {
+    if buf.len() >= 2 {
+        let len = u16::from_le_bytes([buf[0], buf[1]]);
+        if (len + 2) as usize <= buf.len() {
+            Ok(buf[2..].split_at((len + 2) as usize))
+        } else {
+            Err(ReadMessageError::TooShort)
+        }
+    } else {
+        Err(ReadMessageError::TooShort)
+    }
 }
 
 pub async fn read_message<S: AsyncRead + Unpin>(
@@ -38,16 +63,35 @@ pub async fn read_message<S: AsyncRead + Unpin>(
     let result = async {
         let tag = stream.read_u8().await.context(IoReadSnafu)?;
         let payload_len = stream.read_u16_le().await.context(IoReadSnafu)?;
+        let mut buf = vec![0u8; payload_len as usize];
+        stream.read_exact(&mut buf).await.context(IoReadSnafu)?;
         match tag {
             0 | 1 => {
-                let mut buf = vec![0u8; payload_len as usize];
-                stream.read_exact(&mut buf).await.context(IoReadSnafu)?;
                 let path = String::try_from(buf).context(InvalidStringSnafu)?;
                 Ok(match tag {
                     0 => ClientMessage::Open { path },
                     1 => ClientMessage::Close { path },
                     _ => unreachable!(),
                 })
+            }
+            2 => {
+                let (akid, remainder) = split_length_prefixed_string(&buf)?;
+                let (sak, remainder) = split_length_prefixed_string(remainder)?;
+                let (st, remainder) = split_length_prefixed_string(remainder)?;
+
+                if !remainder.is_empty() {
+                    return Err(ReadMessageError::TooLong);
+                }
+
+                Ok(ClientMessage::UpdateAuth(AwsAuth {
+                    access_key_id: str::from_utf8(akid).context(InvalidStrSnafu)?.to_string(),
+                    secret_access_key: str::from_utf8(sak).context(InvalidStrSnafu)?.to_string(),
+                    session_token: if st.is_empty() {
+                        None
+                    } else {
+                        Some(str::from_utf8(st).context(InvalidStrSnafu)?.to_string())
+                    },
+                }))
             }
             x => Err(ReadMessageError::UnknownTag { tag: x }),
         }

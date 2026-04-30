@@ -10,9 +10,9 @@ use crate::config::Config;
 pub fn create_client(config: &Config) -> Client {
     let conf = aws_sdk_s3::Config::builder()
         .credentials_provider(Credentials::new(
-            &config.access_key_id,
-            &config.secret_access_key,
-            config.session_token.clone(),
+            &config.auth.access_key_id,
+            &config.auth.secret_access_key,
+            config.auth.session_token.clone(),
             None,
             "dls3",
         ))

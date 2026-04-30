@@ -3,10 +3,15 @@ use std::{ffi::OsString, str::FromStr, time::Duration};
 use snafu::{ResultExt, Snafu};
 
 #[derive(Clone, Debug)]
-pub struct Config {
+pub struct AwsAuth {
     pub access_key_id: String,
     pub secret_access_key: String,
     pub session_token: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct Config {
+    pub auth: AwsAuth,
     pub endpoint_url: String,
     pub region: String,
     pub bucket: String,
@@ -67,9 +72,11 @@ impl Config {
         let mut pargs = pico_args::Arguments::from_vec(args);
 
         Ok(Config {
-            access_key_id: pargs.value_from_str("--access-key-id")?,
-            secret_access_key: pargs.value_from_str("--secret-access-key")?,
-            session_token: pargs.opt_value_from_str("--session-token")?,
+            auth: AwsAuth {
+                access_key_id: pargs.value_from_str("--access-key-id")?,
+                secret_access_key: pargs.value_from_str("--secret-access-key")?,
+                session_token: pargs.opt_value_from_str("--session-token")?,
+            },
             endpoint_url: pargs.value_from_str("--endpoint-url")?,
             region: pargs.value_from_str("--region")?,
             bucket: pargs.value_from_str("--bucket")?,
