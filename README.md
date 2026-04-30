@@ -7,6 +7,8 @@ There are two components:
 - `hook` - the library that is linked into programs that should see the S3 bucket, written in Zig
 - `daemon` - the program that runs in the background communicating with S3. `hook` sends requests to `daemon` over a UNIX socket and the functions return when the data is available.
 
+This is a MVP used in an internal alphaXiv project. It works enough to be useful but is not feature-complete.
+
 ## Security
 
 I have tried to prevent anything too insane from happening, but my defenses do not rise to the level of a real filesystem implementation. **Do not run the daemon at a higher privilege level than the programs you're intercepting**.
