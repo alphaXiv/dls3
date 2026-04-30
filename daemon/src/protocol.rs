@@ -48,7 +48,7 @@ fn split_length_prefixed_string(buf: &[u8]) -> Result<(&[u8], &[u8]), ReadMessag
     if buf.len() >= 2 {
         let len = u16::from_le_bytes([buf[0], buf[1]]);
         if (len + 2) as usize <= buf.len() {
-            Ok(buf[2..].split_at((len + 2) as usize))
+            Ok(buf[2..].split_at(len as usize))
         } else {
             Err(ReadMessageError::TooShort)
         }
