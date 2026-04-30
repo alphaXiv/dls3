@@ -64,7 +64,7 @@ More interesting issues:
 - [x] Hook into more functions
 - [ ] Handle writing files
 - [ ] Strip prefix from paths
-- [ ] Easy wrapper
+- [x] Easy wrapper
 - [x] Work out how functions get intercepted before the initialization routine runs
   - because someone else can call functions we override during a dynamic initializer
 - [ ] Set file mtime based on S3 metadata
