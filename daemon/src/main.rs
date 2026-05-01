@@ -1,4 +1,4 @@
-use std::{ffi::OsString, io::ErrorKind, os::unix::ffi::OsStrExt, str::FromStr};
+use std::{io::ErrorKind, str::FromStr};
 
 use snafu::{ResultExt, whatever};
 use tokio::{io::AsyncWriteExt, net::UnixListener};
