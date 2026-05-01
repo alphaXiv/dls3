@@ -93,11 +93,13 @@ async fn main() -> Result<(), snafu::Whatever> {
 
     let env = format!(
         concat!(
+            "# pid={pid}\n", // this line is read by neer to check if the daemon is alive
             "export LD_PRELOAD={hook_path}:$LD_PRELOAD\n",
             "export DLS3_SOCKET_PATH={socket_path}\n",
             "export DLS3_BACKING_PATH={backing_path}\n",
             "export DLS3_BACKING_FD={backing_fd}\n",
         ),
+        pid = std::process::id(),
         hook_path = &config.hook_path,
         socket_path = socket_path.to_str().expect("socket_path is invalid UTF-8"),
         backing_path = backing_path
