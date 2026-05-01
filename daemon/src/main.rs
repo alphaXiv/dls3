@@ -8,6 +8,7 @@ use tracing_subscriber::{EnvFilter, Layer, layer::SubscriberExt};
 use crate::{
     config::{Config, usage},
     connection::handle_client,
+    protocol::{ClientMessage, read_message},
     s3::create_client,
     store::Store,
 };
@@ -119,27 +120,46 @@ async fn main() -> Result<(), snafu::Whatever> {
 
     let store = Store::new(&client, config.clone(), backing_path.clone())
         .await
-        .with_whatever_context(|_| "initializing backing store failed")?;
+        .whatever_context("initializing backing store failed")?;
 
     info!(
         "created backing store in {}",
         backing_path.to_string_lossy()
     );
 
-    loop {
-        match listener.accept().await {
-            Ok((stream, _addr)) => {
-                info!("accepted listener");
-                let local_store = store.clone();
-                tokio::spawn(async move {
-                    if let Err(err) = handle_client(stream, local_store).await {
-                        warn!(?err, "error handling client connection");
-                    }
-                });
-            }
-            Err(err) => {
-                warn!(?err, "error accepting connection");
+    let listen_loop_store = store.clone();
+    tokio::spawn(async move {
+        loop {
+            match listener.accept().await {
+                Ok((stream, _addr)) => {
+                    info!("accepted listener");
+                    let local_store = listen_loop_store.clone();
+                    tokio::spawn(async move {
+                        if let Err(err) = handle_client(stream, local_store).await {
+                            warn!(?err, "error handling client connection");
+                        }
+                    });
+                }
+                Err(err) => {
+                    warn!(?err, "error accepting connection");
+                }
             }
         }
+    });
+
+    // listen for auth messages on stdin
+    let mut handle = store.handle();
+    while let Some(msg) = read_message(&mut tokio::io::stdin())
+        .await
+        .whatever_context("failed to read stdin")?
+    {
+        if let ClientMessage::UpdateAuth(new_auth) = msg {
+            handle.replace_auth(new_auth);
+        }
     }
+
+    if let Err(err) = tokio::fs::remove_dir_all(&base_dir).await {
+        warn!(?err, "failed to clean up");
+    }
+    std::process::exit(0)
 }
