@@ -90,16 +90,20 @@ async fn main() -> Result<(), snafu::Whatever> {
         format!("could not listen at {}", socket_path.to_string_lossy())
     })?;
 
-    let mut env = OsString::new();
-    env.push("LD_PRELOAD=");
-    env.push(&config.hook_path);
-    env.push(":$LD_PRELOAD\nDLS3_SOCKET_PATH=");
-    env.push(&socket_path);
-    env.push("\nDLS3_BACKING_PATH=");
-    env.push(&backing_path);
-    env.push("\nDLS3_BACKING_FD=");
-    env.push(backing_fd.to_string());
-    env.push("\n");
+    let env = format!(
+        concat!(
+            "export LD_PRELOAD={hook_path}:$LD_PRELOAD\n",
+            "export DLS3_SOCKET_PATH={socket_path}\n",
+            "export DLS3_BACKING_PATH={backing_path}\n",
+            "export DLS3_BACKING_FD={backing_fd}\n",
+        ),
+        hook_path = &config.hook_path,
+        socket_path = socket_path.to_str().expect("socket_path is invalid UTF-8"),
+        backing_path = backing_path
+            .to_str()
+            .expect("backing_path is invalid UTF-8"),
+        backing_fd = backing_fd,
+    );
 
     let mut env_file = tokio::fs::OpenOptions::new()
         .write(true)
