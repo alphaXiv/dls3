@@ -23,20 +23,16 @@ pub struct Config {
     /// Path to the library to LD_PRELOAD
     pub hook_path: String,
     pub mountpoint: String,
-    /// Command to run
-    pub command: Vec<OsString>,
+    /// Path where we will write environment variables for the victim
+    pub env_destination: String,
 }
 
 #[derive(Debug, Snafu)]
 pub enum ParseConfigError {
     #[snafu()]
     PicoArgs { source: pico_args::Error },
-    #[snafu(display("Missing `--` separating flags from command"))]
-    NoDashDash,
     #[snafu()]
     InvalidNumber { source: <f64 as FromStr>::Err },
-    #[snafu(display("No command specified after `--`"))]
-    EmptyCommand,
 }
 
 impl From<pico_args::Error> for ParseConfigError {
@@ -52,24 +48,7 @@ fn parse_duration(string: &str) -> Result<Duration, ParseConfigError> {
 
 impl Config {
     pub fn parse_args() -> Result<Config, ParseConfigError> {
-        let mut args: Vec<_> = std::env::args_os().collect();
-        // remove executable path
-        args.remove(0);
-
-        // find `--` separating flags from command
-        let command = if let Some(dash_dash_idx) = args.iter().position(|arg| arg == "--") {
-            let args_after: Vec<_> = args.drain(dash_dash_idx + 1..).collect();
-            if args_after.is_empty() {
-                return Err(ParseConfigError::EmptyCommand);
-            }
-            // remove `--`
-            args.pop();
-            args_after
-        } else {
-            return Err(ParseConfigError::NoDashDash);
-        };
-
-        let mut pargs = pico_args::Arguments::from_vec(args);
+        let mut pargs = pico_args::Arguments::from_env();
 
         Ok(Config {
             auth: AwsAuth {
@@ -91,7 +70,7 @@ impl Config {
                 .unwrap_or(Duration::from_secs(5)),
             hook_path: pargs.value_from_str("--hook-path")?,
             mountpoint: pargs.value_from_str("--mountpoint")?,
-            command,
+            env_destination: pargs.value_from_str("--env-destination")?,
         })
     }
 }
@@ -102,12 +81,13 @@ pub fn usage() {
         .unwrap_or_else(|| OsString::from_str("dls3").unwrap());
     eprint!(
         concat!(
-            "usage: {} <flags> -- <command>\n",
+            "usage: {} <flags>\n",
             "\n",
             "required flags (all strings):\n",
             "  --access-key-id, --secret-access-key, --endpoint-url, --region, --bucket: S3 connection details\n",
             "  --hook-path: path to the library we should LD_PRELOAD into the command\n",
             "  --mountpoint: where files should appear to the command. the daemon must be able to create this location as a symlink.\n",
+            "  --env-destination: where to write environment variables for victims to use",
             "\n",
             "optional flags:\n",
             "  --session-token <string>: if required by your S3 authentication\n",

@@ -1,9 +1,7 @@
-use std::{
-    ffi::OsString, io::ErrorKind, os::unix::process::ExitStatusExt, process::Stdio, str::FromStr,
-};
+use std::{ffi::OsString, io::ErrorKind, os::unix::ffi::OsStrExt, str::FromStr};
 
 use snafu::{ResultExt, whatever};
-use tokio::{net::UnixListener, signal::unix::SignalKind};
+use tokio::{io::AsyncWriteExt, net::UnixListener};
 use tracing::{info, warn};
 use tracing_subscriber::{EnvFilter, Layer, layer::SubscriberExt};
 
@@ -47,17 +45,11 @@ async fn main() -> Result<(), snafu::Whatever> {
 
     let mut base_dir = dirs::cache_dir().expect("failed to get cache directory");
     base_dir.push(format!("dls3-{}", std::process::id()));
+    tokio::fs::create_dir_all(&base_dir)
+        .await
+        .with_whatever_context(|_| format!("failed to create {base_dir:?}"))?;
     let backing_path = base_dir.join("store");
     let socket_path = base_dir.join("dls3.sock");
-
-    let store = Store::new(&client, config.clone(), backing_path.clone())
-        .await
-        .with_whatever_context(|_| "initializing backing store failed")?;
-
-    info!(
-        "created backing store in {}",
-        backing_path.to_string_lossy()
-    );
 
     // make the mountpoint a symlink to `/proc/self/fd/{some fd}`, or determine the file descriptor
     // if the mountpoint already exists
@@ -98,65 +90,52 @@ async fn main() -> Result<(), snafu::Whatever> {
         format!("could not listen at {}", socket_path.to_string_lossy())
     })?;
 
-    let mut child = tokio::process::Command::new(&config.command[0])
-        .args(&config.command[1..])
-        .env(
-            "LD_PRELOAD",
-            if let Some(existing_preload) = std::env::var_os("LD_PRELOAD") {
-                let mut val = OsString::from_str(&config.hook_path).unwrap();
-                val.push(":");
-                val.push(existing_preload);
-                val
-            } else {
-                OsString::from_str(&config.hook_path).unwrap()
-            },
-        )
-        .env("DLS3_SOCKET_PATH", &socket_path)
-        .env("DLS3_BACKING_PATH", &backing_path)
-        .env("DLS3_BACKING_FD", backing_fd.to_string())
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .with_whatever_context(|_| format!("failed to spawn {:?}", config.command))?;
+    let mut env = OsString::new();
+    env.push("LD_PRELOAD=");
+    env.push(&config.hook_path);
+    env.push(":$LD_PRELOAD\nDLS3_SOCKET_PATH=");
+    env.push(&socket_path);
+    env.push("\nDLS3_BACKING_PATH=");
+    env.push(&backing_path);
+    env.push("\nDLS3_BACKING_FD=");
+    env.push(backing_fd.to_string());
+    env.push("\n");
 
-    tokio::spawn(async move {
-        loop {
-            match listener.accept().await {
-                Ok((stream, _addr)) => {
-                    info!("accepted listener");
-                    let local_store = store.clone();
-                    tokio::spawn(async move {
-                        if let Err(err) = handle_client(stream, local_store).await {
-                            warn!(?err, "error handling client connection");
-                        }
-                    });
-                }
-                Err(err) => {
-                    warn!(?err, "error accepting connection");
-                }
+    let mut env_file = tokio::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&config.env_destination)
+        .await
+        .with_whatever_context(|_| format!("could not open {}", config.env_destination))?;
+    env_file
+        .write_all(env.as_bytes())
+        .await
+        .with_whatever_context(|_| format!("could not write to {}", config.env_destination))?;
+
+    let store = Store::new(&client, config.clone(), backing_path.clone())
+        .await
+        .with_whatever_context(|_| "initializing backing store failed")?;
+
+    info!(
+        "created backing store in {}",
+        backing_path.to_string_lossy()
+    );
+
+    loop {
+        match listener.accept().await {
+            Ok((stream, _addr)) => {
+                info!("accepted listener");
+                let local_store = store.clone();
+                tokio::spawn(async move {
+                    if let Err(err) = handle_client(stream, local_store).await {
+                        warn!(?err, "error handling client connection");
+                    }
+                });
+            }
+            Err(err) => {
+                warn!(?err, "error accepting connection");
             }
         }
-    });
-
-    // ignore SIGINT in case the child wants to block it (if it doesn't, it will still exit)
-    match tokio::signal::unix::signal(SignalKind::interrupt()) {
-        Ok(_) => {}
-        Err(err) => warn!(?err, "failed to listen for SIGINT"),
     }
-
-    let status = child
-        .wait()
-        .await
-        .whatever_context("failed to wait for child to exit")?;
-
-    if let Err(err) = tokio::fs::remove_dir_all(&base_dir).await {
-        warn!(?err, "failed to clean up files");
-    }
-
-    std::process::exit(
-        status
-            .code()
-            .unwrap_or_else(|| status.signal().unwrap_or(0) + 128),
-    );
 }
