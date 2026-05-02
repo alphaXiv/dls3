@@ -44,13 +44,25 @@ async fn main() -> Result<(), snafu::Whatever> {
 
     let client = create_client(&config);
 
-    let mut base_dir = dirs::cache_dir().expect("failed to get cache directory");
-    base_dir.push(format!("dls3-{}", std::process::id()));
+    let base_dir = dirs::cache_dir()
+        .expect("failed to get cache directory")
+        .join("dls3");
     tokio::fs::create_dir_all(&base_dir)
         .await
         .with_whatever_context(|_| format!("failed to create {base_dir:?}"))?;
+    // clean up from previous instance
     let backing_path = base_dir.join("store");
     let socket_path = base_dir.join("dls3.sock");
+    if let Err(err) = tokio::fs::remove_dir_all(&backing_path).await
+        && err.kind() != ErrorKind::NotFound
+    {
+        whatever!(Err(err), "failed to remove {backing_path:?}");
+    }
+    if let Err(err) = tokio::fs::remove_file(&socket_path).await
+        && err.kind() != ErrorKind::NotFound
+    {
+        whatever!(Err(err), "failed to remove {socket_path:?}");
+    }
 
     // make the mountpoint a symlink to `/proc/self/fd/{some fd}`, or determine the file descriptor
     // if the mountpoint already exists

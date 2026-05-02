@@ -30,7 +30,13 @@ pub fn get(config: *const hook.Config, io: Io) !*State {
                 return err;
             };
             const stream = addr.connect(io) catch |err| {
-                hook.log.err("failed to connect to {s}: {s}", .{ config.socket_path, @errorName(err) });
+                if (err != error.FileNotFound) {
+                    // delete the socket so that other copies of the hook will get NotFound and not log anything
+                    // we might race against another hook trying to delete the socket but that's fine
+                    _ = std.os.linux.unlink(config.socket_path);
+                    hook.log.err("failed to connect to {s}: {s}", .{ config.socket_path, @errorName(err) });
+                    hook.log.err("dls3 is now disabled", .{});
+                }
                 state = err;
                 return err;
             };

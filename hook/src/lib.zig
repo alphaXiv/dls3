@@ -66,7 +66,6 @@ fn tryInit() !void {
 fn init() callconv(.c) void {
     log.debug("init hook for process {}, thread {}", .{ std.os.linux.getpid(), std.os.linux.gettid() });
     tryInit() catch |e| {
-        // TODO: get this to print only once across multiple processes
         log.err("error initializing dls3: {s}", .{@errorName(e)});
     };
 }

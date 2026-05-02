@@ -10,8 +10,8 @@ config: Config,
 
 const Global = @This();
 pub const Config = struct {
-    socket_path: []const u8,
-    backing_path: []const u8,
+    socket_path: [:0]const u8,
+    backing_path: [:0]const u8,
     backing_fd: i32,
 };
 
