@@ -172,8 +172,5 @@ async fn main() -> Result<(), snafu::Whatever> {
         }
     }
 
-    if let Err(err) = tokio::fs::remove_dir_all(&base_dir).await {
-        warn!(?err, "failed to clean up");
-    }
     std::process::exit(0)
 }
