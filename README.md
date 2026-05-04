@@ -69,3 +69,11 @@ More interesting issues:
   - because someone else can call functions we override during a dynamic initializer
 - [ ] Set file mtime based on S3 metadata
 - [ ] Deleting files in S3 is busted
+
+## Testimonials
+
+> "We wrote a virus that man in the middles the program to so it hallucinates files that don't exist"
+>
+> Wasn't this kinda how the xz backdoor worked?
+>
+> &mdash; @Nova-Aurora
