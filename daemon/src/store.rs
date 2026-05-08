@@ -5,6 +5,7 @@ use rustix::{
     io::Errno,
     path::Arg,
 };
+use s3::Bucket;
 use snafu::ResultExt;
 use snafu::prelude::Snafu;
 use std::{
@@ -19,12 +20,6 @@ use std::{
 use tokio::sync::broadcast;
 use tracing::{error, trace};
 
-use aws_sdk_s3::{
-    Client,
-    error::{ProvideErrorMetadata, SdkError},
-    operation::list_objects_v2::ListObjectsV2Error,
-};
-
 use crate::{
     config::{AwsAuth, Config},
     s3::create_client,
@@ -32,9 +27,9 @@ use crate::{
 
 #[derive(Debug)]
 pub struct Store {
-    client: Mutex<Client>,
+    bucket: Mutex<Box<Bucket>>,
     config: Config,
-    root_fd: rustix::fd::OwnedFd,
+    pub root_fd: rustix::fd::OwnedFd,
     /// TODO: merge these hashmaps, maybe use the hashheap crate
     /// Files that at least one client is using
     opened_files: Mutex<HashMap<String, OpenedFileState>>,
@@ -113,7 +108,7 @@ enum DownloadIfChangedResult {
 impl Store {
     /// Initialize a backing store with sparse files from the contents of an S3 bucket
     pub async fn new(
-        client: &Client,
+        bucket: Box<Bucket>,
         config: Config,
         backing_path: PathBuf,
     ) -> Result<Arc<Store>, InitError> {
@@ -124,7 +119,7 @@ impl Store {
             })?;
 
         let store = Arc::new(Store {
-            client: Mutex::new(client.clone()),
+            bucket: Mutex::new(bucket),
             root_fd: rustix::fs::open(&backing_path, OFlags::DIRECTORY, Mode::empty())
                 .with_context(|_| RustixSnafu {
                     path: backing_path.to_string_lossy(),

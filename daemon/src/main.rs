@@ -9,10 +9,11 @@ use crate::{
     config::{Config, usage},
     connection::handle_client,
     protocol::{ClientMessage, read_message},
-    s3::create_client,
+    s3::{create_bucket, create_client},
     store::Store,
 };
 
+mod backing_file;
 mod config;
 mod connection;
 mod protocol;
@@ -42,7 +43,7 @@ async fn main() -> Result<(), snafu::Whatever> {
         "invalid arguments"
     })?;
 
-    let client = create_client(&config);
+    let bucket = create_bucket(&config);
 
     let base_dir = dirs::cache_dir()
         .expect("failed to get cache directory")
@@ -132,7 +133,7 @@ async fn main() -> Result<(), snafu::Whatever> {
         .await
         .with_whatever_context(|_| format!("could not write to {}", config.env_destination))?;
 
-    let store = Store::new(&client, config.clone(), backing_path.clone())
+    let store = Store::new(bucket, config.clone(), backing_path.clone())
         .await
         .whatever_context("initializing backing store failed")?;
 
